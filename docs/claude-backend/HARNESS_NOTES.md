@@ -26,6 +26,7 @@ curl -sSL https://code.claude.com/docs/en/headless.md | grep -n 'exits with code
 | ENV | `env-vars` | GWP | `llm-gateway-protocol` |
 | PC | `prompt-caching` | GWC | `llm-gateway-connect` |
 | CHG | `changelog` | HOST | `agent-sdk/hosting` |
+| SK | `skills` | | |
 
 A section name after the key, such as [HL § Basic usage], is the heading on that page.
 
@@ -48,7 +49,7 @@ A section name after the key, such as [HL § Basic usage], is the heading on tha
 
 ## 2. Subagents and multi-agent features
 
-Claude Code has three delegation mechanisms. Subagents and workflows work in a headless `-p` run; agent teams do not. [SUB § Which subagents run in the background] [WF § Turn workflows off] [TEAM § Enable agent teams]
+Claude Code has four ways to start another agent: subagents, forked skills, dynamic workflows and agent teams. All but agent teams work in a headless `-p` run. [SUB § Which subagents run in the background] [SK § Run skills in a subagent] [WF § Turn workflows off] [TEAM § Enable agent teams]
 
 **Subagents** (the `Agent` tool)
 
@@ -72,6 +73,13 @@ Claude Code has three delegation mechanisms. Subagents and workflows work in a h
 - Components: a team lead (the main session), teammates (separate Claude Code instances, each with its own context window), a shared task list with pending, in-progress and completed states and file-locked claiming, and a mailbox at `~/.claude/teams/{team-name}/inboxes/{agent-name}.json`. Teammates message each other directly. [TEAM § Architecture] [TEAM § Assign and claim tasks]
 - **Not available headless.** "In non-interactive mode with the `-p` flag, including Agent SDK sessions, Claude doesn't spawn teammates, and a subagent that Claude names runs as an ordinary subagent even with agent teams enabled." [TEAM § Enable agent teams]
 - Known limitations include task status lagging, one team per session and no nested teams. [TEAM § Limitations]
+
+**Forked skills** (the `Skill` tool)
+
+- A skill whose frontmatter sets `context: fork` runs in a new subagent that gets the skill content as its prompt; in `-p` mode Claude Code waits for its result. [SK § Run skills in a subagent]
+- Claude Code ships bundled skills (for example `/batch`, `/code-review`, `/debug`) and Claude invokes some of them automatically. The `disableBundledSkills` setting turns them off. [SK § Bundled skills]
+- **NOT CHECKED:** whether any bundled skill sets `context: fork`. Verify by listing the skills in the `system`/`init` event and reading their definitions on the pinned version. A run with the `Skill` tool removed avoids the question.
+- Forks of the conversation, which Claude starts on its own while fork mode is on, are a kind of `Agent` tool call: an `Agent` call with a `name` launches a teammate "unless the call is a fork". [SUB § Fork the current conversation] [TEAM § How Claude starts agent teams]
 
 **Dynamic workflows**
 
@@ -130,9 +138,10 @@ Claude Code has three delegation mechanisms. Subagents and workflows work in a h
 - **State location.** `CLAUDE_CONFIG_DIR` moves everything normally under `~/.claude` (settings, session history, plugins). [ENV] Transcripts are JSONL at `<config dir>/projects/<project>/<session-id>.jsonl`, where `<project>` is the working directory with non-alphanumeric characters replaced by `-`. The format "is internal to Claude Code and changes between versions". [SESS § Where transcripts are stored]
 - **Credentials headless.** In `-p` mode `ANTHROPIC_API_KEY` "is always used when present", with no approval prompt. [AUTH § Authentication precedence]
 - **Stdin.** Non-interactive mode reads stdin. If it cannot, Claude Code warns on stderr and continues with the prompt from the command line. [HL § Pipe data through Claude] **NOT CHECKED:** that a container started without `-i` does not block on stdin. Verify in the first smoke test.
-- **Bare mode.** `--bare` skips hooks, skills, custom commands, subagents, plugins, MCP servers, auto memory and `CLAUDE.md`, gives Claude only the Bash, file read and file edit tools with a minimal system prompt, disables background tasks, and needs `ANTHROPIC_API_KEY` or an `apiKeyHelper`. It "will become the default for `-p` in a future release". [HL § Start faster with bare mode] [ENV, `CLAUDE_CODE_SIMPLE` row]
+- **Bare mode.** `--bare` skips hooks, skills, custom commands, subagents, plugins, MCP servers, auto memory and `CLAUDE.md`, gives Claude only the Bash, file read and file edit tools with a minimal system prompt, disables background tasks, and needs `ANTHROPIC_API_KEY` or an `apiKeyHelper`. The docs call it "the recommended mode for scripted and SDK calls" and say it "will become the default for `-p` in a future release". [HL § Start faster with bare mode] [ENV, `CLAUDE_CODE_SIMPLE` row]
 - **What `-p` loads without `--bare`.** The same as an interactive session, including anything in the working directory or `~/.claude`: hooks in a project's `.claude/settings.json` and servers in its `.mcp.json` run with no trust prompt. [HL § Start faster with bare mode]
 - **Background network traffic.** `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` set to any non-empty value disables auto-updates, telemetry, error reporting and release-note fetches. Setting it to `0` still disables them. [ENV] [GWC § Turn off traffic outside the gateway path]
+- **Feature flags.** Claude Code turns some features on through flags it fetches from Anthropic. `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`, `DISABLE_TELEMETRY` and `CLAUDE_CODE_DISABLE_FEATURE_FLAGS` all stop that fetch, and so does authenticating to a non-Anthropic `ANTHROPIC_BASE_URL` with `ANTHROPIC_AUTH_TOKEN` and no API key. The documented flag-gated features include Remote Control, the advisor tool, MCP tasks and Code Mode. In the first session after an install a flag-gated feature can be missing, and a clean environment on every run makes every run a first session. [ENV § Features that need feature-flag fetching] [ENV § First session after an install or upgrade] **NOT CHECKED:** that the documented list is the complete set of flag-gated behaviour in a `-p` coding run. Verify by diffing the `system`/`init` event's `tools` between a run with fetching on (after a warm-up run on the same config directory) and one with it off.
 - Sizing guidance for one agent: 1 GiB RAM, 5 GiB disk, 1 CPU as a starting point. [HOST § Resources]
 
 ## 6. Custom endpoints and models

@@ -15,7 +15,7 @@ Status: plan only. No code has been written and nothing here has been run. Items
 In scope:
 
 - One Claude Code process per task, in a local Docker container, headless (`claude -p`).
-- **Single agent.** Delegation tools are removed, so there is exactly one conversation per task.
+- **Single agent.** The tools that start another agent are removed (D3), so each task is meant to run as one conversation. That no other path starts an agent is NOT CHECKED; test T7 verifies it by counting subagent messages.
 - Same workspace layout, result file and evaluator as the other backends. No change to `runner.py`, `docker_self/batch_container.py`, `openhands/` or `deepseek/`.
 
 Out of scope for the first version:
@@ -31,8 +31,8 @@ Each decision states what was chosen, why, and the alternative that was rejected
 |---|---|---|---|
 | D1 | Mirror the `deepseek/` package file for file (`config.py`, `runner.py`, `session_summary.py`, `prompt.txt`). | Reviewers can diff the two backends; the integration layer needs no change (ANALYSIS §3.1). | A generic harness-adapter base class. Premature with two examples of different shapes. |
 | D2 | Run the `claude` CLI in print mode as the container entrypoint. | Same shape as DeepSeek (`docker/deepseek.Dockerfile:21`); the host needs no new Python dependency. | The Python Agent SDK inside the container. It spawns the same CLI [HN §5] and adds a layer for no gain here. |
-| D3 | Single agent: remove the `Agent` and `Workflow` tools. | Agent teams do not run headless [HN §2]. With delegation left on, Claude may run up to 20 subagents at once [HN §2], which makes request concurrency per task uncontrolled; that matters for a hardware-profiling benchmark. DeepSeek's profile also disables its alternative delegation tool (`deepseek/config.py:73-76`). | Leave Claude Code's default delegation on. Deferred to Open Question 2. |
-| D4 | Full harness, not `--bare`. Isolation comes from a fresh `CLAUDE_CONFIG_DIR` and a workspace that contains only `start.md`. | `--bare` swaps in a minimal system prompt and a three-tool set [HN §5]. That is no longer Claude Code as shipped, and the harness is the thing being measured. | `--bare`: faster and more reproducible. Deferred to Open Question 3. |
+| D3 | Single agent: remove the `Agent`, `Workflow` and `Skill` tools. `Agent` also covers conversation forks [HN §2]. `Skill` is removed because a skill with `context: fork` runs as a subagent and Claude invokes some bundled skills on its own [HN §2]; the workspace holds no skills of its own, so only bundled skills are lost. | Agent teams do not run headless [HN §2]. With delegation left on, Claude may run up to 20 subagents at once [HN §2], which makes request concurrency per task uncontrolled; that matters for a hardware-profiling benchmark. DeepSeek's profile also disables its alternative delegation tool (`deepseek/config.py:73-76`). | Leave Claude Code's default delegation on. Deferred to Open Question 2. |
+| D4 | Full harness, not `--bare`. Isolation comes from a fresh `CLAUDE_CONFIG_DIR` and a workspace that contains only `start.md`. | `--bare` swaps in a minimal system prompt and a three-tool set [HN §5]. The default system prompt and tool set are what users run, and the harness is the thing being measured. This is still not Claude Code exactly as shipped: delegation, skill and web tools are removed (D3, D11) and flag-gated features are off (D14). | `--bare`: faster and more reproducible, and the docs call it "the recommended mode for scripted and SDK calls" and say it will become the default for `-p` [HN §5]. Deferred to Open Question 3. |
 | D5 | `--permission-mode bypassPermissions`, container user is the host uid:gid, and the backend refuses to start when the host uid is 0. | The documented unattended-container mode [HN §5]; equivalent to DeepSeek's `DSH_PERMISSION_MODE=danger-full-access` (`docker/deepseek.Dockerfile:19`). Claude Code refuses this mode as root [HN §5]. Host uid:gid keeps artifacts readable, as in `deepseek/runner.py:49`. | `dontAsk` plus allow rules: silently denies some writes, which would look like model failure. Remapping root to uid 1000: more code; add only if a root host is really needed. |
 | D6 | `--output-format stream-json --verbose`, captured as `stdout.jsonl`. | Events are written as they happen, so a timed-out run still leaves a log. The file name is fixed by shared code (`docker_self/batch_container.py:16`) and already means JSON lines. | `--output-format json`: a single object written only at the end, so a timeout leaves nothing. |
 | D7 | `status` is `completed` only if the container run completed **and** the stream ends with a `result` event whose `subtype` is `success` and `is_error` is false. | Exit-code behaviour for every error case is NOT CHECKED [HN §3]. Without this guard, an API failure that exits 0 would send a half-written repo to the evaluator and be recorded as model performance. | Exit code only, as DeepSeek does (`deepseek/runner.py:66`). Revisit once test T9 shows the two always agree. |
@@ -42,6 +42,7 @@ Each decision states what was chosen, why, and the alternative that was rejected
 | D11 | Remove `WebSearch` and `WebFetch`. | Parity with the DeepSeek profile, which disables web tools (`deepseek/config.py:73-76`, `readme.md:78`). `WebFetch` also calls `api.anthropic.com` regardless of the base URL [HN §6]. | Leaving them on. |
 | D12 | Install with `npm install -g @anthropic-ai/claude-code@<pinned version>` on the same base as the DeepSeek image; enforce the pin through an image label. | The docs' recommended way to pin in a container [HN §5]. The native installer puts the binary under the installing user's home directory (`https://code.claude.com/docs/en/setup.md`, section "Install on network storage": "the native installer's default `~/.local/share/claude/versions/` directory … sit[s] in the home directory"), and the container runs as the host uid (D5), not as the user who built the image. A global npm install sits under `/usr/local`, outside any home directory. **NOT CHECKED:** that a native install made as root at build time is unreadable by the run-time uid; verify by building with the native installer and running `claude --version` as uid 1000. The same base (Python 3.12, Node 24, `docker/deepseek.Dockerfile:1-7`) gives both agents the same toolchain. | Native installer under a home directory. |
 | D13 | No settings file. Everything is a CLI flag or an environment variable. | One place to read the whole configuration; nothing depends on settings precedence. `4bf6013` removed write-only run artifacts, so none is added. | A generated `settings.json` in the config directory. |
+| D14 | Turn off feature-flag fetching, through `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` in the image. | A run should depend only on the pinned version and the run configuration, not on flags Anthropic serves at run time, which can change between runs and are not recorded. With a fresh config directory every run is a first session anyway, where flag-gated features can be missing, and a gateway run with a bearer token cannot fetch flags at all [HN §5]. It also keeps telemetry and update checks from leaving the container. Cost: flag-gated features are off; the documented ones (Remote Control, advisor tool, MCP tasks, Code Mode) are none that this plan uses [HN §5]. | Leave fetching on and reuse a warmed config directory: closer to an interactive install, but results would then depend on server-side flags at warm-up time. Open Question 3. |
 
 ## 3. Directory layout
 
@@ -145,7 +146,7 @@ The README must say: set `contextWindow` for any model that is not a Claude mode
 - Base and system packages identical to `docker/deepseek.Dockerfile:1-7`: `python:3.12-bookworm`, `/usr/local` copied from `node:24-bookworm`, then `build-essential git ripgrep ca-certificates`.
 - Build argument `CLAUDE_CODE_VERSION`; `npm install --global @anthropic-ai/claude-code@$CLAUDE_CODE_VERSION`; then `claude --version` as a build step so a missing binary fails the build.
 - Label `org.nl2repobench.harness-revision=$CLAUDE_CODE_VERSION`, the same label key DeepSeek uses (`docker/deepseek.Dockerfile:18`). `claude/runner.py:_image_info` rejects an image whose label does not equal the pin. DeepSeek uses a prefix match instead (`startswith`, `deepseek/runner.py:29`), because its build writes the full commit SHA into the label while the pin is the short form (`scripts/build_deepseek.sh:5,9,14`). Here the label and the pin are the same version string, so exact equality is correct.
-- Environment baked into the image, mirroring `docker/deepseek.Dockerfile:19`: `CLAUDE_CONFIG_DIR=/claude-home/config`, `DISABLE_AUTOUPDATER=1`, `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` [HN §5].
+- Environment baked into the image, mirroring `docker/deepseek.Dockerfile:19`: `CLAUDE_CONFIG_DIR=/claude-home/config`, `DISABLE_AUTOUPDATER=1`, `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` [HN §5]. The last one also turns off feature-flag fetching (D14).
 - `WORKDIR /workspace`, `ENTRYPOINT ["claude"]`.
 
 `scripts/build_claude.sh [image_tag]`: holds the version pin, builds from an empty temporary directory with `--file docker/claude.Dockerfile` so that no repo content or local credential enters the build context (the same intent as `scripts/build_deepseek.sh:4`). Unlike the DeepSeek script it needs no local harness checkout, only network access to the npm registry.
@@ -198,7 +199,7 @@ A fresh `claude-home` per task means no settings, memory or session carries from
 --model <moduleName>
 --permission-mode bypassPermissions
 [--effort <reasoningEffort>] [--max-turns <n>] [--max-budget-usd <x>]
---disallowedTools Agent Workflow WebSearch WebFetch
+--disallowedTools Agent Workflow Skill WebSearch WebFetch
 ```
 
 Three things an implementer could get wrong:
@@ -246,7 +247,7 @@ The `claude` block, all read from `stdout.jsonl` (field names in [HN §5] and [H
 | `compactions` | Count of `system`/`compact_boundary` events | No |
 | `api_retries` | Count of `system`/`api_retry` events | No |
 | `permission_denials` | Length of the `result` event's list | No |
-| `delegations` | Count of `tool_use` blocks named `Agent` or `Workflow`; expected 0 | No |
+| `delegations` | Count of messages with a non-null `parent_tool_use_id` (subagent messages [HN §2]) plus `tool_use` blocks named `Agent`, `Workflow` or `Skill`; expected 0 | No |
 
 The reader must tolerate a truncated or partly unparsable file (timeouts cut it short) and must not fail the task because of an unknown event type.
 
@@ -262,8 +263,8 @@ Which model to use is Open Question 1. The plan assumes one inexpensive Claude m
 |---|---|---|
 | T1 | `python main.py --backend nosuch` and `--help` | `claude` is listed among the choices; `openhands` and `deepseek` still are |
 | T2 | Config validation, each run before any container exists: unknown key in `claude`; `protocol: "openai-completions"`; `sk` present; key variable unset; `reasoningEfforts` present | Each exits with a message naming the field; no `workspaces/` directory is created |
-| T3 | `bash scripts/build_claude.sh`, then `docker run --rm --entrypoint claude <image> --version` | Prints the pinned version; the image label matches |
-| T4 | Run one task with `baseUrl` pointing at a closed local port, a dummy key and `task_timeout_seconds: 120` (connection retries can otherwise take minutes [HN §3]) | `stdout.jsonl` contains a `system`/`init` event, which shows the process started and did not block on stdin; `result/<id>.json` exists with `status: "failed"`; the container is removed; `grep -r` finds neither the dummy key nor the URL under `result/` or anywhere in `workspaces/<run_id>/` (including `stdout.jsonl`, `stderr.log` and `claude-home/`). **NOT CHECKED:** whether `api_retry` events or transcripts echo the endpoint; if they do, record which run files are safe to publish |
+| T3 | `bash scripts/build_claude.sh`, then `docker run --rm --entrypoint claude <image> --version`, and the same with `--user 1000:1000` | Both print the pinned version (the second checks the run-time-user concern in D12); the image label matches |
+| T4 | Run one task with `baseUrl` pointing at a closed local port, a dummy key and `task_timeout_seconds: 120` (connection retries can otherwise take minutes [HN §3]) | `stdout.jsonl` contains a `system`/`init` event, which shows the process started and did not block on stdin; `result/<id>.json` exists with `status: "failed"`; the container is removed; `grep -r` finds neither the dummy key nor the URL under `result/` or anywhere in `workspaces/<run_id>/` (including `stdout.jsonl`, `stderr.log` and `claude-home/`). The documented `api_retry` event fields carry no URL [HN §3]; whether error text, `stderr.log` or transcripts echo the endpoint is NOT CHECKED. If any do, record which run files are safe to publish |
 | T5 | `summarize_run` on three hand-written fixtures: a success stream, an `error_max_turns` stream, a file cut off mid-line | Returns `completed`, `incomplete`, `incomplete` without raising |
 | T6 | Run as root (for example in a root shell) | Refuses before scheduling, with the D5 message |
 
@@ -271,7 +272,7 @@ Which model to use is Open Question 1. The plan assumes one inexpensive Claude m
 
 | # | Test | Passes when |
 |---|---|---|
-| T7 | Full generation run, `max_budget_usd` set low | `generation_status` and `status` are `completed`; `claude.result_subtype` is `success`; `claude.model_usage` has exactly one key, the configured model (D10); `claude.delegations` is 0 and `claude.tools` lacks the four removed tools (D3, D11); transcripts exist under `session_logs_path`; list what Claude Code left in `workspace/` besides the repo (risk R5) |
+| T7 | Full generation run, `max_budget_usd` set low | `generation_status` and `status` are `completed`; `claude.result_subtype` is `success`; `claude.model_usage` has exactly one key, the configured model (D10); `claude.delegations` is 0 and `claude.tools` lacks the five removed tools (D3, D11); transcripts exist under `session_logs_path`; list what Claude Code left in `workspace/` besides the repo (risk R5) |
 | T8 | Optional. Same, with `contextWindow: 100000` | `claude.compactions` ≥ 1. If the run finishes below 100K tokens the test is inconclusive and 4.3 stays NOT CHECKED. |
 | T9 | `max_turns: 2` | `claude.result_subtype` is `error_max_turns`; `status` is `failed`; `evaluation_status` is `skipped`. Record `exit_code`: an exit code of 0 here is a finding about Claude Code that confirms D7 is needed, not a backend failure. |
 | T10 | `task_timeout_seconds: 60` | `generation_status` is `timeout`; `exit_code` is 143, or 137 if Claude Code did not exit within the 10-second grace period (record which); the container is removed; `stdout.jsonl` holds the events up to the stop |
@@ -318,7 +319,7 @@ For supervisors. Each blocks or shapes the implementation.
 
 1. **Which models and endpoints is this backend for?** Claude models on the Anthropic API only, or also self-hosted non-Claude models through a translating gateway, which Anthropic does not support (R1)? Which cheap, non-GLM model is approved for the tests in section 8?
 2. **Is single-agent with delegation removed the right first baseline (D3)?** Or should Claude Code's default subagent delegation stay on? And is a lead-plus-subagents second stage wanted, given that agent teams cannot run headless?
-3. **Full harness or `--bare` (D4)?** Full is Claude Code as users run it; bare is leaner and more reproducible but is a different system prompt and tool set.
+3. **Full harness or `--bare` (D4), and feature flags on or off (D14)?** Full keeps Claude Code's default system prompt and tool set; bare is leaner, more reproducible and the documented recommendation for scripted calls, but is a different system prompt and tool set. Flags off makes runs reproducible but leaves out flag-gated behaviour that interactive users get.
 4. **Should a run that hits the timeout, `max_turns` or the budget still be evaluated if it left code?** Today no backend evaluates such runs (`runner.py:83`). Changing it means editing shared code and affects all three backends.
 5. **Version policy.** Which Claude Code version to pin, and how often to move it? Results from different versions are not comparable.
 6. **Are root hosts in scope?** If EPCC or CI runners execute as root, D5 needs the uid-remapping alternative.

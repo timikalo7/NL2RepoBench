@@ -147,7 +147,7 @@ A job that raises instead of returning still gets a result file, with `status = 
 | `container_id`, `attach_exit_code`, `error`, `cleanup_error`, `duration_seconds` | `docker_self/batch_container.py:33-72` (present when applicable) |
 | `task_uuid`, `workspace_path`, `config_path`, `image`, `team`, `session_logs_path` | `deepseek/runner.py:60-64` |
 | `status` | `deepseek/runner.py:66-68`, may be changed at `runner.py:103,105` |
-| `evaluation_status`, `test_score`, `score` | `runner.py:82`, `runner.py:101` |
+| `evaluation_status`, `test_score`, `score` | `runner.py:82`, `runner.py:101`, `runner.py:103,105` (errors), defaults at `runner.py:125-127` |
 | `post_process_result`, `evaluation_workspace_path`, `evaluation_error` | `runner.py:96-97,105` (only when evaluation runs) |
 | `backend`, `module_name`, `pro_name`, `saved_at` | `runner.py:120-124` |
 
@@ -169,6 +169,7 @@ A job that raises instead of returning still gets a result file, with `status = 
 - **G12. Importing `logging_config` has a side effect.** It creates `logs/application.log` relative to the current directory at import (`logging_config.py:165-166`), and `main.py:8` imports it before the `chdir` at `main.py:31`.
 - **G13. Concurrency defaults differ.** `max_pool_size` defaults to 1 for DeepSeek (`deepseek/runner.py:74`) and 10 for OpenHands (`openhands/openhands_app.py:71`). The OpenHands timeout is a top-level `task_timeout_seconds` (`openhands/openhands_app.py:72`); DeepSeek's lives under the `deepseek` object (`deepseek/runner.py:84`).
 - **G14. OpenHands writes the API key to disk.** It renders the resolved key into `workspaces/<run_id>/config.toml` in plain text, with mode 0600 (`openhands/openhands_app.py:29-44`). DeepSeek does not (G3). Results are published openly, so never publish an OpenHands run's `workspaces/` directory as is.
+- **G15. `only_test.py` re-scores a run destructively.** It calls the evaluator on `workspaces/<run_id>/workspace` itself (`only_test.py:17-18`), not on a copy, so it deletes the package and test files from the generated repo (G9). Copy the workspace first if you use it.
 
 ## 7. Not checked
 
