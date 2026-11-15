@@ -13,7 +13,7 @@ All `file:line` references are to commit `bbd664b` (tip of `main`, checked 2026-
 | `4bf6013` | 2026-10-07 | "Remove excess code from the DeepSeek backend". Cleanup of `d08501b`; moves `startPro` validation into `runner.model_tasks`. |
 | `bbd664b` | 2026-10-08 | Merge commit of pull request 1 (branch `deepseek-harness-backend`) into `main`. Tree is identical to `4bf6013`. |
 
-No other commit touches these paths. The whole repo has 15 commits and one extra remote branch, `origin/deepseek-harness-backend`, which points at `4bf6013`.
+No other commit touches these paths. The only remote branch besides `main` is `origin/deepseek-harness-backend`, which points at `4bf6013`.
 
 Reproduce:
 
@@ -70,7 +70,9 @@ Shared code. A new backend calls it and should not need to change it.
 | Atomic JSON write | `runner.py:72-77` (`write_json`) | Optional helper |
 | Container lifecycle and timeout | `docker_self/batch_container.py:13-73` (`run_batch_container`) | Pass `docker create` arguments, a container name, the run directory and a timeout |
 | Evaluation hand-off | `runner.py:80-106` (`evaluate_result`) | Call it as the last line of the per-task function |
-| Evaluator | `openhands/post_processor.py:485-555` (`post_process_task`) | Nothing. Shared by every backend despite living in `openhands/` (imported at `runner.py:90`) |
+| Evaluator | `openhands/post_processor.py:485-555` (`post_process_task`) | Nothing. Shared by every backend despite living in `openhands/` (imported at `runner.py:90`). It drives Docker through `docker_self/docker_service.py` (`openhands/post_processor.py:11`), not through `batch_container.py` |
+| Config validation helper | `runner.py:34-37` (`positive_int`) | Use for every integer option |
+| Docker CLI helper | `docker_self/batch_container.py:9-10` (`docker_command`) | Use for one-off Docker calls such as image inspection |
 
 ### 3.2 Backend layer (what gets replaced)
 
@@ -118,8 +120,8 @@ Command: `python main.py --config config.deepseek.json`.
 | 9 | Check the image exists and carries the pinned revision label | `_image_info` | `deepseek/runner.py:20-31` (called at line 89) |
 | 10 | Build one `Job` per task with a fresh run id | `start_deepseek`, `new_run_id` | `deepseek/runner.py:90-94`, `runner.py:28-31` |
 | 11 | Schedule jobs on a thread pool | `run_batch` | `runner.py:112-113` |
-| 12 | Create `workspaces/<run_id>/workspace` and `dsh-home`; copy the task's `start.md` in | `_run_task` | `deepseek/runner.py:36-40` |
-| 13 | Write the harness profile; render and save the prompt | `_run_task`, `write_profile` | `deepseek/runner.py:41-44`, `deepseek/config.py:55-99` |
+| 12 | Create `workspaces/<run_id>/workspace`; copy the task's `start.md` in | `_run_task` | `deepseek/runner.py:36-40` |
+| 13 | Create `dsh-home` by writing the harness profile into it, then `dsh-home/user`; render and save the prompt | `_run_task`, `write_profile` | `deepseek/runner.py:41-44`, `deepseek/config.py:55-99` (directory created at `:57-58`) |
 | 14 | Build `docker create` arguments (host uid:gid, two bind mounts, key passed by variable name, image id, prompt) | `_run_task` | `deepseek/runner.py:45-57` |
 | 15 | `docker create`, then `docker start --attach` with stdout to `stdout.jsonl` and stderr to `stderr.log` | `run_batch_container` | `docker_self/batch_container.py:28-40` |
 | 16 | Timeout: mark `generation_status = "timeout"`, `docker stop --time 10` | `run_batch_container` | `docker_self/batch_container.py:41-45` |
@@ -160,12 +162,13 @@ A job that raises instead of returning still gets a result file, with `status = 
 - **G5. Timed-out and failed generations are never evaluated**, even if the workspace holds usable code (`runner.py:83`). A timeout therefore reports `score: null`, not a low score.
 - **G6. `status` is not pass or fail.** It means every requested stage ran. `score` is the count of passed tests (`runner.py:100`); there is no threshold.
 - **G7. Run directory names are not bare UUIDs.** `new_run_id` returns `<task>-<model>` lower-cased and truncated to 70 characters, then `-<uuid hex>` (`runner.py:30-31`). The same string names the container (`dsh-<run_id>`, `deepseek/runner.py:58`) and the evaluator image and container (`python-test-<run_id>`, `openhands/post_processor.py:527,530`).
-- **G8. The evaluator needs its own network and platform.** It builds `FROM --platform=linux/amd64 ghcr.io/multimodal-art-projection/nl2repobench/<task>:1.0` (`openhands/post_processor.py:282`), so evaluation pulls from GHCR and needs amd64 emulation on ARM hosts. Generation does not.
+- **G8. The evaluator needs its own network and platform.** It builds `FROM --platform=linux/amd64 ghcr.io/multimodal-art-projection/nl2repobench/<task>:1.0` (`openhands/post_processor.py:282`), so evaluation pulls from GHCR and needs amd64 emulation on ARM hosts. Generation does not force a platform: neither `FROM` line in `docker/deepseek.Dockerfile:1-2` nor the build command in `scripts/build_deepseek.sh:14` passes `--platform`.
 - **G9. The evaluator mutates its input**, which is why `evaluate_result` gives it a copy (`runner.py:87-92`). It deletes `setup.py`, `pyproject.toml`, `requirements.txt` and similar from the copy (`openhands/post_processor.py:187-228`).
 - **G10. Pins are duplicated.** The harness pin `639ed01539` appears in `deepseek/runner.py:15` and `scripts/build_deepseek.sh:5`; `_image_info` enforces it through the image label `org.nl2repobench.harness-revision` (`docker/deepseek.Dockerfile:18`, `deepseek/runner.py:28-30`). The session reader accepts only `session.v4.jsonl` with `version == 4` (`deepseek/session_summary.py:11,15-16`).
-- **G11. `config.json` lists a task that does not exist.** It names `more-itertools` but the directory is `test_files/more-Itertools`, so `model_tasks` rejects the shipped config on a case-sensitive filesystem (`runner.py:64-65`). Reproduce: compare `config.json` `proNameList` with `ls test_files`. `test_files/` holds 104 task directories plus `task_difficulty.csv`.
+- **G11. `config.json` lists a task that does not exist.** It names `more-itertools` but the directory is `test_files/more-Itertools`, and task names are matched as exact strings against the directory names that `os.listdir` returns (`test_data_service.py:38,104`, `runner.py:49,64`), so `model_tasks` rejects the shipped config on every filesystem (`runner.py:64-65`). Reproduce: `python3 -c "import os; print('more-itertools' in os.listdir('test_files'))"` prints `False`. `test_files/` holds 104 task directories plus `task_difficulty.csv`.
 - **G12. Importing `logging_config` has a side effect.** It creates `logs/application.log` relative to the current directory at import (`logging_config.py:165-166`), and `main.py:8` imports it before the `chdir` at `main.py:31`.
 - **G13. Concurrency defaults differ.** `max_pool_size` defaults to 1 for DeepSeek (`deepseek/runner.py:74`) and 10 for OpenHands (`openhands/openhands_app.py:71`). The OpenHands timeout is a top-level `task_timeout_seconds` (`openhands/openhands_app.py:72`); DeepSeek's lives under the `deepseek` object (`deepseek/runner.py:84`).
+- **G14. OpenHands writes the API key to disk.** It renders the resolved key into `workspaces/<run_id>/config.toml` in plain text, with mode 0600 (`openhands/openhands_app.py:29-44`). DeepSeek does not (G3). Results are published openly, so never publish an OpenHands run's `workspaces/` directory as is.
 
 ## 7. Not checked
 

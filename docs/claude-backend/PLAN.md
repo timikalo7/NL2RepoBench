@@ -1,6 +1,10 @@
 # Implementation plan: a `claude/` backend
 
+Context: this repo is the ARIA TA4 fork of NL2RepoBench (University of Edinburgh and EPCC), used to profile LLM performance across hardware. Results are published openly.
+
 Goal: add Claude Code as a third generation backend, selected with `"backend": "claude"` or `--backend claude`. At this stage only pipeline correctness matters, not model performance.
+
+Rules from the project brief that this plan must keep: API keys come only from environment variables named by `apiKeyEnv` and are never written to a file; testing uses cheap models on 2 to 4 sample tasks, never the full set and never GLM.
 
 Read first: `ANALYSIS.md` (how the DeepSeek backend plugs into the shared code; section 3.3 is the contract this plan must meet) and `HARNESS_NOTES.md` (Claude Code facts, cited as [HN §n] below). `file:line` references are to commit `bbd664b`.
 
@@ -36,7 +40,7 @@ Each decision states what was chosen, why, and the alternative that was rejected
 | D9 | `protocol` defaults to `anthropic-messages` for this backend and any other value is an error. | Claude Code speaks only the Anthropic Messages format to `ANTHROPIC_BASE_URL` [HN §6]. | Silently ignoring `protocol`: an `openai-completions` entry copied from the DeepSeek config would fail later with an opaque HTTP error. |
 | D10 | Pin `ANTHROPIC_DEFAULT_HAIKU_MODEL` to the configured model. | Keeps background requests on the model under test [HN §6]. | Leaving it unset: a second model may appear in usage, and in the bill. |
 | D11 | Remove `WebSearch` and `WebFetch`. | Parity with the DeepSeek profile, which disables web tools (`deepseek/config.py:73-76`, `readme.md:78`). `WebFetch` also calls `api.anthropic.com` regardless of the base URL [HN §6]. | Leaving them on. |
-| D12 | Install with `npm install -g @anthropic-ai/claude-code@<pinned version>` on the same base as the DeepSeek image; enforce the pin through an image label. | The docs' recommended way to pin in a container [HN §5]. A global npm install is readable by any uid, which the native installer's per-user layout is not. The same base (Python 3.12, Node 24, `docker/deepseek.Dockerfile:1-7`) gives both agents the same toolchain. | Native installer under a home directory. |
+| D12 | Install with `npm install -g @anthropic-ai/claude-code@<pinned version>` on the same base as the DeepSeek image; enforce the pin through an image label. | The docs' recommended way to pin in a container [HN §5]. The native installer puts the binary under the installing user's home directory (`https://code.claude.com/docs/en/setup.md`, section "Install on network storage": "the native installer's default `~/.local/share/claude/versions/` directory … sit[s] in the home directory"), and the container runs as the host uid (D5), not as the user who built the image. A global npm install sits under `/usr/local`, outside any home directory. **NOT CHECKED:** that a native install made as root at build time is unreadable by the run-time uid; verify by building with the native installer and running `claude --version` as uid 1000. The same base (Python 3.12, Node 24, `docker/deepseek.Dockerfile:1-7`) gives both agents the same toolchain. | Native installer under a home directory. |
 | D13 | No settings file. Everything is a CLI flag or an environment variable. | One place to read the whole configuration; nothing depends on settings precedence. `4bf6013` removed write-only run artifacts, so none is added. | A generated `settings.json` in the config directory. |
 
 ## 3. Directory layout
@@ -140,7 +144,7 @@ The README must say: set `contextWindow` for any model that is not a Claude mode
 
 - Base and system packages identical to `docker/deepseek.Dockerfile:1-7`: `python:3.12-bookworm`, `/usr/local` copied from `node:24-bookworm`, then `build-essential git ripgrep ca-certificates`.
 - Build argument `CLAUDE_CODE_VERSION`; `npm install --global @anthropic-ai/claude-code@$CLAUDE_CODE_VERSION`; then `claude --version` as a build step so a missing binary fails the build.
-- Label `org.nl2repobench.harness-revision=$CLAUDE_CODE_VERSION`, the same label key DeepSeek uses (`docker/deepseek.Dockerfile:18`). `claude/runner.py:_image_info` rejects an image whose label does not equal the pin, as `deepseek/runner.py:28-30` does.
+- Label `org.nl2repobench.harness-revision=$CLAUDE_CODE_VERSION`, the same label key DeepSeek uses (`docker/deepseek.Dockerfile:18`). `claude/runner.py:_image_info` rejects an image whose label does not equal the pin. DeepSeek uses a prefix match instead (`startswith`, `deepseek/runner.py:29`), because its build writes the full commit SHA into the label while the pin is the short form (`scripts/build_deepseek.sh:5,9,14`). Here the label and the pin are the same version string, so exact equality is correct.
 - Environment baked into the image, mirroring `docker/deepseek.Dockerfile:19`: `CLAUDE_CONFIG_DIR=/claude-home/config`, `DISABLE_AUTOUPDATER=1`, `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` [HN §5].
 - `WORKDIR /workspace`, `ENTRYPOINT ["claude"]`.
 
@@ -259,7 +263,7 @@ Which model to use is Open Question 1. The plan assumes one inexpensive Claude m
 | T1 | `python main.py --backend nosuch` and `--help` | `claude` is listed among the choices; `openhands` and `deepseek` still are |
 | T2 | Config validation, each run before any container exists: unknown key in `claude`; `protocol: "openai-completions"`; `sk` present; key variable unset; `reasoningEfforts` present | Each exits with a message naming the field; no `workspaces/` directory is created |
 | T3 | `bash scripts/build_claude.sh`, then `docker run --rm --entrypoint claude <image> --version` | Prints the pinned version; the image label matches |
-| T4 | Run one task with `baseUrl` pointing at a closed local port, a dummy key and `task_timeout_seconds: 120` (connection retries can otherwise take minutes [HN §3]) | `stdout.jsonl` contains a `system`/`init` event, which shows the process started and did not block on stdin; `result/<id>.json` exists with `status: "failed"`; the container is removed; `grep -r` finds neither the dummy key nor the URL under `result/` or in `container.log` |
+| T4 | Run one task with `baseUrl` pointing at a closed local port, a dummy key and `task_timeout_seconds: 120` (connection retries can otherwise take minutes [HN §3]) | `stdout.jsonl` contains a `system`/`init` event, which shows the process started and did not block on stdin; `result/<id>.json` exists with `status: "failed"`; the container is removed; `grep -r` finds neither the dummy key nor the URL under `result/` or anywhere in `workspaces/<run_id>/` (including `stdout.jsonl`, `stderr.log` and `claude-home/`). **NOT CHECKED:** whether `api_retry` events or transcripts echo the endpoint; if they do, record which run files are safe to publish |
 | T5 | `summarize_run` on three hand-written fixtures: a success stream, an `error_max_turns` stream, a file cut off mid-line | Returns `completed`, `incomplete`, `incomplete` without raising |
 | T6 | Run as root (for example in a root shell) | Refuses before scheduling, with the D5 message |
 
@@ -269,7 +273,7 @@ Which model to use is Open Question 1. The plan assumes one inexpensive Claude m
 |---|---|---|
 | T7 | Full generation run, `max_budget_usd` set low | `generation_status` and `status` are `completed`; `claude.result_subtype` is `success`; `claude.model_usage` has exactly one key, the configured model (D10); `claude.delegations` is 0 and `claude.tools` lacks the four removed tools (D3, D11); transcripts exist under `session_logs_path`; list what Claude Code left in `workspace/` besides the repo (risk R5) |
 | T8 | Optional. Same, with `contextWindow: 100000` | `claude.compactions` ≥ 1. If the run finishes below 100K tokens the test is inconclusive and 4.3 stays NOT CHECKED. |
-| T9 | `max_turns: 2` | `claude.result_subtype` is `error_max_turns`; `exit_code` is non-zero; `status` is `failed`; `evaluation_status` is `skipped`. Record whether exit code and result event agree (input to D7). |
+| T9 | `max_turns: 2` | `claude.result_subtype` is `error_max_turns`; `status` is `failed`; `evaluation_status` is `skipped`. Record `exit_code`: an exit code of 0 here is a finding about Claude Code that confirms D7 is needed, not a backend failure. |
 | T10 | `task_timeout_seconds: 60` | `generation_status` is `timeout`; `exit_code` is 143, or 137 if Claude Code did not exit within the 10-second grace period (record which); the container is removed; `stdout.jsonl` holds the events up to the stop |
 
 **Paid: evaluation hand-off**
@@ -282,7 +286,7 @@ Which model to use is Open Question 1. The plan assumes one inexpensive Claude m
 
 | # | Test | Passes when |
 |---|---|---|
-| T12 | `python main.py --config config.deepseek.example.json` with no DeepSeek image built | Fails with "DeepSeek image is unavailable" (`deepseek/runner.py:26`), which shows the existing dispatch path is unchanged. Needs `NL2REPO_BASE_URL` and `NL2REPO_API_KEY` set to dummy values. |
+| T12 | `python main.py --config config.deepseek.example.json` with no DeepSeek image built | Fails with "DeepSeek image is unavailable" (`deepseek/runner.py:26`), which shows the existing dispatch path is unchanged. Needs `NL2REPO_API_KEY` set to a dummy value and `NL2REPO_BASE_URL` set to a dummy `http(s)` URL with a host, such as `http://127.0.0.1:9`; anything else fails earlier with "Set baseUrl or NL2REPO_BASE_URL" (`deepseek/config.py:20-22`), which would look like a regression. |
 
 Not in this plan: any gateway or non-Claude model test. If Open Question 1 asks for it, add one `jsonlines` run through the chosen gateway and expect to iterate on the variables in [HN §6].
 
