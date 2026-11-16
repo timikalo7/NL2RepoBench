@@ -15,13 +15,13 @@ Status: plan only. No code has been written and nothing here has been run. Items
 In scope:
 
 - One Claude Code process per task, in a local Docker container, headless (`claude -p`).
-- **Single agent.** The tools that start another agent are removed (D3), so each task is meant to run as one conversation. That no other path starts an agent is NOT CHECKED; test T7 verifies it by counting subagent messages.
+- **Single agent.** The tools that start another agent are removed and running `claude` from Bash is denied (D3), so each task is meant to run as one conversation. T7 checks the documented delegation tools and T13 checks the Bash block. A form the deny rule cannot match, such as `sh -c 'claude …'`, is not blocked by the rule [HN §5]; that it then fails for lack of a credential (D8) is NOT CHECKED and recorded by T13.
 - Same workspace layout, result file and evaluator as the other backends. No change to `runner.py`, `docker_self/batch_container.py`, `openhands/` or `deepseek/`.
 
 Out of scope for the first version:
 
 - Any multi-agent mode. See section 9 for what that loses and why.
-- Non-Claude models behind a translating gateway. The backend will not block them, but they are untested and unsupported by Anthropic (risk R1).
+- Non-Claude models behind a translating gateway. The backend will not block them, but they are untested and unsupported by Anthropic (risk R1, section 10).
 
 ## 2. Decisions
 
@@ -31,18 +31,18 @@ Each decision states what was chosen, why, and the alternative that was rejected
 |---|---|---|---|
 | D1 | Mirror the `deepseek/` package file for file (`config.py`, `runner.py`, `session_summary.py`, `prompt.txt`). | Reviewers can diff the two backends; the integration layer needs no change (ANALYSIS §3.1). | A generic harness-adapter base class. Premature with two examples of different shapes. |
 | D2 | Run the `claude` CLI in print mode as the container entrypoint. | Same shape as DeepSeek (`docker/deepseek.Dockerfile:21`); the host needs no new Python dependency. | The Python Agent SDK inside the container. It spawns the same CLI [HN §5] and adds a layer for no gain here. |
-| D3 | Single agent: remove the `Agent`, `Workflow` and `Skill` tools. `Agent` also covers conversation forks [HN §2]. `Skill` is removed because a skill with `context: fork` runs as a subagent and Claude invokes some bundled skills on its own [HN §2]; the workspace holds no skills of its own, so only bundled skills are lost. | Agent teams do not run headless [HN §2]. With delegation left on, Claude may run up to 20 subagents at once [HN §2], which makes request concurrency per task uncontrolled; that matters for a hardware-profiling benchmark. DeepSeek's profile also disables its alternative delegation tool (`deepseek/config.py:73-76`). | Leave Claude Code's default delegation on. Deferred to Open Question 2. |
+| D3 | Single agent: remove the `Agent`, `Workflow` and `Skill` tools, and deny starting `claude` from Bash with permission rules (§6.2) rather than trying to detect it afterwards. `Agent` also covers conversation forks [HN §2]. `Skill` is removed because a skill with `context: fork` runs as a subagent and Claude invokes some bundled skills on its own [HN §2]; the workspace holds no skills of its own, so only bundled skills are lost. | Agent teams do not run headless [HN §2]. With delegation left on, Claude may run up to 20 subagents at once [HN §2], which makes request concurrency per task uncontrolled; that matters for a hardware-profiling benchmark. DeepSeek's profile also disables its alternative delegation tool (`deepseek/config.py:73-76`). | Leave Claude Code's default delegation on. Deferred to Open Question 2. |
 | D4 | Full harness, not `--bare`. Isolation comes from a fresh `CLAUDE_CONFIG_DIR` and a workspace that contains only `start.md`. | `--bare` swaps in a minimal system prompt and a three-tool set [HN §5]. The default system prompt and tool set are what users run, and the harness is the thing being measured. This is still not Claude Code exactly as shipped: delegation, skill and web tools are removed (D3, D11) and flag-gated features are off (D14). | `--bare`: faster and more reproducible, and the docs call it "the recommended mode for scripted and SDK calls" and say it will become the default for `-p` [HN §5]. Deferred to Open Question 3. |
 | D5 | `--permission-mode bypassPermissions`, container user is the host uid:gid, and the backend refuses to start when the host uid is 0. | The documented unattended-container mode [HN §5]; equivalent to DeepSeek's `DSH_PERMISSION_MODE=danger-full-access` (`docker/deepseek.Dockerfile:19`). Claude Code refuses this mode as root [HN §5]. Host uid:gid keeps artifacts readable, as in `deepseek/runner.py:49`. | `dontAsk` plus allow rules: silently denies some writes, which would look like model failure. Remapping root to uid 1000: more code; add only if a root host is really needed. |
 | D6 | `--output-format stream-json --verbose`, captured as `stdout.jsonl`. | Events are written as they happen, so a timed-out run still leaves a log. The file name is fixed by shared code (`docker_self/batch_container.py:16`) and already means JSON lines. | `--output-format json`: a single object written only at the end, so a timeout leaves nothing. |
 | D7 | `status` is `completed` only if the container run completed **and** the stream ends with a `result` event whose `subtype` is `success` and `is_error` is false. | Exit-code behaviour for every error case is NOT CHECKED [HN §3]. Without this guard, an API failure that exits 0 would send a half-written repo to the evaluator and be recorded as model performance. | Exit code only, as DeepSeek does (`deepseek/runner.py:66`). Revisit once test T9 shows the two always agree. |
-| D8 | The API key reaches the container by variable name only. An inline `sk` key in the config is rejected. The base URL is also passed by environment, never on the command line, and neither appears in the result JSON. | Project rule: keys come from `apiKeyEnv` and are never written to a file. Same mechanism as `deepseek/runner.py:45,54`. Endpoint details are kept out of argv and errors by existing convention (`docker_self/batch_container.py:62`). Results are published. | Accepting `sk` for parity with the other backends (`deepseek/config.py:26`). |
+| D8 | The API key reaches the container by variable name only, and `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1` keeps it out of every Bash command the agent runs. An inline `sk` key in the config is rejected. The base URL is also passed by environment, never on the command line, and neither appears in the result JSON. | Project rule: keys come from `apiKeyEnv` and are never written to a file. Same mechanism as `deepseek/runner.py:45,54`. Without the scrub, a routine `env` or `.env` file would copy the key into `stdout.jsonl`, transcripts or the workspace, all of which may be published [HN §5]. Endpoint details are kept out of argv and errors by existing convention (`docker_self/batch_container.py:62`). Results are published. | Accepting `sk` for parity with the other backends (`deepseek/config.py:26`). |
 | D9 | `protocol` defaults to `anthropic-messages` for this backend and any other value is an error. | Claude Code speaks only the Anthropic Messages format to `ANTHROPIC_BASE_URL` [HN §6]. | Silently ignoring `protocol`: an `openai-completions` entry copied from the DeepSeek config would fail later with an opaque HTTP error. |
 | D10 | Pin `ANTHROPIC_DEFAULT_HAIKU_MODEL` to the configured model. | Keeps background requests on the model under test [HN §6]. | Leaving it unset: a second model may appear in usage, and in the bill. |
 | D11 | Remove `WebSearch` and `WebFetch`. | Parity with the DeepSeek profile, which disables web tools (`deepseek/config.py:73-76`, `readme.md:78`). `WebFetch` also calls `api.anthropic.com` regardless of the base URL [HN §6]. | Leaving them on. |
 | D12 | Install with `npm install -g @anthropic-ai/claude-code@<pinned version>` on the same base as the DeepSeek image; enforce the pin through an image label. | The docs' recommended way to pin in a container [HN §5]. The native installer puts the binary under the installing user's home directory (`https://code.claude.com/docs/en/setup.md`, section "Install on network storage": "the native installer's default `~/.local/share/claude/versions/` directory … sit[s] in the home directory"), and the container runs as the host uid (D5), not as the user who built the image. A global npm install sits under `/usr/local`, outside any home directory. **NOT CHECKED:** that a native install made as root at build time is unreadable by the run-time uid; verify by building with the native installer and running `claude --version` as uid 1000. The same base (Python 3.12, Node 24, `docker/deepseek.Dockerfile:1-7`) gives both agents the same toolchain. | Native installer under a home directory. |
 | D13 | No settings file. Everything is a CLI flag or an environment variable. | One place to read the whole configuration; nothing depends on settings precedence. `4bf6013` removed write-only run artifacts, so none is added. | A generated `settings.json` in the config directory. |
-| D14 | Turn off feature-flag fetching, through `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` in the image. | A run should depend only on the pinned version and the run configuration, not on flags Anthropic serves at run time, which can change between runs and are not recorded. With a fresh config directory every run is a first session anyway, where flag-gated features can be missing, and a gateway run with a bearer token cannot fetch flags at all [HN §5]. It also keeps telemetry and update checks from leaving the container. Cost: flag-gated features are off; the documented ones (Remote Control, advisor tool, MCP tasks, Code Mode) are none that this plan uses [HN §5]. | Leave fetching on and reuse a warmed config directory: closer to an interactive install, but results would then depend on server-side flags at warm-up time. Open Question 3. |
+| D14 | Turn off feature-flag fetching, through `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` in the image. | A run should depend only on the pinned version and the run configuration, not on flags Anthropic serves at run time, which can change between runs and are not recorded. With a fresh config directory every run is a first session anyway, where flag-gated features can be missing, and a gateway run with a bearer token cannot fetch flags at all [HN §5]. It also keeps telemetry and update checks from leaving the container. Cost: flag-gated features are off; the documented list has sixteen items, among them Remote Control, the advisor tool, MCP tasks, Code Mode, synced skills and plugins, artifact comments and `claude import`, and none is something this plan uses (it has no MCP servers, no Windows hosts and no claude.ai login) [ENV § Features that need feature-flag fetching, on `https://code.claude.com/docs/en/env-vars.md`]. Whether that list is complete is NOT CHECKED [HN §5]. | Leave fetching on and reuse a warmed config directory: closer to an interactive install, but results would then depend on server-side flags at warm-up time. Open Question 3. |
 
 ## 3. Directory layout
 
@@ -82,6 +82,7 @@ Untouched: `runner.py`, `docker_self/`, `openhands/`, `deepseek/`, `test_data_se
 | `task_timeout_seconds` | positive int | `7200` | Wall-clock limit, enforced by `run_batch_container` (`docker_self/batch_container.py:38-45`) |
 | `max_turns` | positive int | none | `--max-turns` [HN §3] |
 | `max_budget_usd` | positive number | none | `--max-budget-usd` [HN §3] |
+| `prompt_file` | path | `claude/prompt.txt` | Prompt to send. For tests such as T13 only; benchmark runs leave it unset |
 
 Unknown keys are an error. `max_pool_size` and `evaluate` stay top-level, as for DeepSeek (`deepseek/runner.py:74-75`); `max_pool_size` defaults to 1.
 
@@ -99,7 +100,7 @@ Example (`config.claude.example.json`):
     {
       "moduleName": "YOUR_MODEL_ID",
       "protocol": "anthropic-messages",
-      "baseUrl": "",
+      "baseUrl": "https://api.anthropic.com",
       "apiKeyEnv": "NL2REPO_API_KEY",
       "proNameList": ["jsonlines"]
     }
@@ -114,7 +115,7 @@ Example (`config.claude.example.json`):
 | `moduleName` | Required (already validated by `runner.py:57-59`) | `--model <moduleName>` |
 | `proNameList` | Required (`runner.py:60-67`) | One job per task |
 | `protocol` | Optional; must be `anthropic-messages` (D9) | Nothing |
-| `baseUrl` | Optional. Falls back to `NL2REPO_BASE_URL`, like `deepseek/config.py:20`. A single trailing `/v1` is stripped, because Claude Code appends `/v1/messages` itself [HN §6]. | `ANTHROPIC_BASE_URL`. If neither is set the variable is not passed and Claude Code uses the Anthropic API. |
+| `baseUrl` | **Required**, an `http(s)` URL with a host; use `https://api.anthropic.com` for the Anthropic API. There is deliberately no fallback to `NL2REPO_BASE_URL`, unlike `deepseek/config.py:20`: that variable is exported for DeepSeek runs (`readme.md:32`) and would silently redirect a Claude run. A missing or empty value fails config validation, before any container starts. A single trailing `/v1` is stripped, because Claude Code appends `/v1/messages` itself [HN §6]. | `ANTHROPIC_BASE_URL` |
 | `apiKeyEnv` | Optional, default `NL2REPO_API_KEY` (as `deepseek/config.py:23`). The named variable must be set and non-empty. | Its value is passed as `ANTHROPIC_API_KEY`, or as `ANTHROPIC_AUTH_TOKEN` when `authHeader` is `bearer` |
 | `authHeader` | **New**, optional: `x-api-key` (default) or `bearer`. Needed because the two variables map to different HTTP headers and the wrong one gives 401 [HN §6]. | Selects the credential variable |
 | `sk` | Rejected (D8) | Error |
@@ -146,7 +147,7 @@ The README must say: set `contextWindow` for any model that is not a Claude mode
 - Base and system packages identical to `docker/deepseek.Dockerfile:1-7`: `python:3.12-bookworm`, `/usr/local` copied from `node:24-bookworm`, then `build-essential git ripgrep ca-certificates`.
 - Build argument `CLAUDE_CODE_VERSION`; `npm install --global @anthropic-ai/claude-code@$CLAUDE_CODE_VERSION`; then `claude --version` as a build step so a missing binary fails the build.
 - Label `org.nl2repobench.harness-revision=$CLAUDE_CODE_VERSION`, the same label key DeepSeek uses (`docker/deepseek.Dockerfile:18`). `claude/runner.py:_image_info` rejects an image whose label does not equal the pin. DeepSeek uses a prefix match instead (`startswith`, `deepseek/runner.py:29`), because its build writes the full commit SHA into the label while the pin is the short form (`scripts/build_deepseek.sh:5,9,14`). Here the label and the pin are the same version string, so exact equality is correct.
-- Environment baked into the image, mirroring `docker/deepseek.Dockerfile:19`: `CLAUDE_CONFIG_DIR=/claude-home/config`, `DISABLE_AUTOUPDATER=1`, `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` [HN §5]. The last one also turns off feature-flag fetching (D14).
+- Environment baked into the image, mirroring `docker/deepseek.Dockerfile:19`: `CLAUDE_CONFIG_DIR=/claude-home/config`, `DISABLE_AUTOUPDATER=1`, `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`, `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1` [HN §5]. `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` also turns off feature-flag fetching (D14); the scrub keeps the key out of Bash commands (D8).
 - `WORKDIR /workspace`, `ENTRYPOINT ["claude"]`.
 
 `scripts/build_claude.sh [image_tag]`: holds the version pin, builds from an empty temporary directory with `--file docker/claude.Dockerfile` so that no repo content or local credential enters the build context (the same intent as `scripts/build_deepseek.sh:4`). Unlike the DeepSeek script it needs no local harness checkout, only network access to the npm registry.
@@ -187,7 +188,7 @@ A fresh `claude-home` per task means no settings, memory or session carries from
 --env HOME=/claude-home/user
 --env PATH=/claude-home/user/.local/bin:/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
 --env ANTHROPIC_API_KEY            (or ANTHROPIC_AUTH_TOKEN; name only, no value)
---env ANTHROPIC_BASE_URL           (name only; omitted when no base URL is configured)
+--env ANTHROPIC_BASE_URL           (name only; always set, see 4.2)
 --env ANTHROPIC_DEFAULT_HAIKU_MODEL=<moduleName>
 --env CLAUDE_CODE_MAX_OUTPUT_TOKENS=<maxTokens>          (when set)
 --env CLAUDE_CODE_MAX_CONTEXT_TOKENS=<contextWindow>     (per 4.3)
@@ -199,8 +200,10 @@ A fresh `claude-home` per task means no settings, memory or session carries from
 --model <moduleName>
 --permission-mode bypassPermissions
 [--effort <reasoningEffort>] [--max-turns <n>] [--max-budget-usd <x>]
---disallowedTools Agent Workflow Skill WebSearch WebFetch
+--disallowedTools Agent Workflow Skill WebSearch WebFetch "Bash(claude *)" "Bash(*/claude *)"
 ```
+
+The two scoped `Bash(...)` entries are deny rules: they keep `claude` and `/usr/local/bin/claude` from being started by the agent, in every permission mode including `bypassPermissions` [HN §5]. Each goes in as one argv element, so no shell quoting is involved.
 
 Three things an implementer could get wrong:
 
@@ -210,7 +213,7 @@ Three things an implementer could get wrong:
 
 Then `run_batch_container(arguments, f"claude-{run_id}", run_dir, timeout, env=env)`, the same call as `deepseek/runner.py:58-59`.
 
-**Timeout.** On expiry the shared code runs `docker stop --time 10` (`docker_self/batch_container.py:44`). With `--init`, SIGTERM reaches Claude Code, which stops its Bash child processes and exits 143 without writing a result event [HN §3]. The run is recorded as `generation_status: "timeout"`, `status: "failed"`, and is not evaluated (ANALYSIS G5).
+**Timeout.** On expiry the shared code runs `docker stop --time 10` (`docker_self/batch_container.py:44`). `--init` runs an init process "that forwards signals and reaps processes" (Docker CLI reference, `--init` row: `https://github.com/docker/cli/blob/master/docs/reference/commandline/container_run.md`), so SIGTERM reaches Claude Code, which then stops its Bash child processes and exits 143 without writing a result event [HN §3]. **NOT CHECKED:** that Claude Code exits within Docker's 10-second grace period; T10 records 143 or 137. The run is recorded as `generation_status: "timeout"`, `status: "failed"`, and is not evaluated (ANALYSIS G5).
 
 ### 6.3 Prompt
 
@@ -249,11 +252,11 @@ The `claude` block, all read from `stdout.jsonl` (field names in [HN §5] and [H
 | `permission_denials` | Length of the `result` event's list | No |
 | `delegations` | Count of messages with a non-null `parent_tool_use_id` (subagent messages [HN §2]) plus `tool_use` blocks named `Agent`, `Workflow` or `Skill`; expected 0 | No |
 
-The reader must tolerate a truncated or partly unparsable file (timeouts cut it short) and must not fail the task because of an unknown event type.
+The reader finds each event by its `type` and `subtype`, never by line number: the `init` event is not always first [HN §5]. It must tolerate a truncated or partly unparsable file (timeouts cut it short) and must not fail the task because of an unknown event type.
 
 ## 8. Test plan
 
-Constraints: cheap models only, never GLM, never the full task set. Two sample tasks, `jsonlines` and `records`: both are labelled Easy in `test_files/task_difficulty.csv`, have the two smallest specifications in the set (15 to 16 KB; `wc -c test_files/*/start.md | sort -n | head -3`) and 27 and 31 tests (`test_case_count.txt`). `jsonlines` is also the task the DeepSeek commit messages report being checked with. Total paid usage: at most six runs, four of them full generations of an Easy task.
+Constraints: cheap models only, never GLM, never the full task set. Two sample tasks, `jsonlines` and `records`: both are labelled Easy in `test_files/task_difficulty.csv`, have the two smallest specifications in the set (15 to 16 KB; `wc -c test_files/*/start.md | sort -n | head -3`) and 27 and 31 tests (`test_case_count.txt`). `jsonlines` is also the task the DeepSeek commit messages report being checked with. Total paid usage: at most seven runs, four of them full generations of an Easy task and one (T13) a short scripted run.
 
 Which model to use is Open Question 1. The plan assumes one inexpensive Claude model reached directly on the Anthropic API.
 
@@ -262,7 +265,7 @@ Which model to use is Open Question 1. The plan assumes one inexpensive Claude m
 | # | Test | Passes when |
 |---|---|---|
 | T1 | `python main.py --backend nosuch` and `--help` | `claude` is listed among the choices; `openhands` and `deepseek` still are |
-| T2 | Config validation, each run before any container exists: unknown key in `claude`; `protocol: "openai-completions"`; `sk` present; key variable unset; `reasoningEfforts` present | Each exits with a message naming the field; no `workspaces/` directory is created |
+| T2 | Config validation, each run before any container exists: unknown key in `claude`; `protocol: "openai-completions"`; `sk` present; key variable unset; `reasoningEfforts` present; `baseUrl` empty while `NL2REPO_BASE_URL` is exported | Each exits with a message naming the field; no `workspaces/` directory is created |
 | T3 | `bash scripts/build_claude.sh`, then `docker run --rm --entrypoint claude <image> --version`, and the same with `--user 1000:1000` | Both print the pinned version (the second checks the run-time-user concern in D12); the image label matches |
 | T4 | Run one task with `baseUrl` pointing at a closed local port, a dummy key and `task_timeout_seconds: 120` (connection retries can otherwise take minutes [HN §3]) | `stdout.jsonl` contains a `system`/`init` event, which shows the process started and did not block on stdin; `result/<id>.json` exists with `status: "failed"`; the container is removed; `grep -r` finds neither the dummy key nor the URL under `result/` or anywhere in `workspaces/<run_id>/` (including `stdout.jsonl`, `stderr.log` and `claude-home/`). The documented `api_retry` event fields carry no URL [HN §3]; whether error text, `stderr.log` or transcripts echo the endpoint is NOT CHECKED. If any do, record which run files are safe to publish |
 | T5 | `summarize_run` on three hand-written fixtures: a success stream, an `error_max_turns` stream, a file cut off mid-line | Returns `completed`, `incomplete`, `incomplete` without raising |
@@ -272,7 +275,7 @@ Which model to use is Open Question 1. The plan assumes one inexpensive Claude m
 
 | # | Test | Passes when |
 |---|---|---|
-| T7 | Full generation run, `max_budget_usd` set low | `generation_status` and `status` are `completed`; `claude.result_subtype` is `success`; `claude.model_usage` has exactly one key, the configured model (D10); `claude.delegations` is 0 and `claude.tools` lacks the five removed tools (D3, D11); transcripts exist under `session_logs_path`; list what Claude Code left in `workspace/` besides the repo (risk R5) |
+| T7 | Full generation run, `max_budget_usd` set low | `generation_status` and `status` are `completed`; `claude.result_subtype` is `success`; `claude.model_usage` has exactly one key, the configured model (D10); `claude.delegations` is 0 and `claude.tools` lacks the five removed tools (D3, D11); Bash tool calls succeed (the scrub's PID namespace works, D8); `grep -rlF -- "$NL2REPO_API_KEY" workspaces/<run_id> result/` prints nothing (it prints file names only, never the key); transcripts exist under `session_logs_path`; list what Claude Code left in `workspace/` besides the repo (risk R5) |
 | T8 | Optional. Same, with `contextWindow: 100000` | `claude.compactions` ≥ 1. If the run finishes below 100K tokens the test is inconclusive and 4.3 stays NOT CHECKED. |
 | T9 | `max_turns: 2` | `claude.result_subtype` is `error_max_turns`; `status` is `failed`; `evaluation_status` is `skipped`. Record `exit_code`: an exit code of 0 here is a finding about Claude Code that confirms D7 is needed, not a backend failure. |
 | T10 | `task_timeout_seconds: 60` | `generation_status` is `timeout`; `exit_code` is 143, or 137 if Claude Code did not exit within the 10-second grace period (record which); the container is removed; `stdout.jsonl` holds the events up to the stop |
@@ -282,6 +285,12 @@ Which model to use is Open Question 1. The plan assumes one inexpensive Claude m
 | # | Test | Passes when |
 |---|---|---|
 | T11 | `evaluate: true`, tasks `jsonlines` and `records`, `max_pool_size: 2` | Two result files; `evaluation_status` is `completed`; `score` is an integer between 0 and the task's test count; `workspace/` is unchanged and `evaluation/workspace/` exists. The score itself is not a pass criterion. Needs GHCR access and amd64 emulation on ARM (ANALYSIS G8). |
+
+**Paid: isolation of the key and of nested runs**
+
+| # | Test | Passes when |
+|---|---|---|
+| T13 | `jsonlines`, `evaluate: false`, `max_turns: 6`, `prompt_file` set to a test prompt: "Use the Bash tool to run each command separately and report its output: `env`, then `claude -p hi`, then `/usr/local/bin/claude -p hi`, then `sh -c 'claude -p hi'`." | The `env` tool result in `stdout.jsonl` contains no `ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN` line; `grep -rlF -- "$NL2REPO_API_KEY" workspaces/<run_id> result/` prints nothing; the result event's `permission_denials` lists the `claude -p hi` and `/usr/local/bin/claude -p hi` calls, which shows the block holds. For `sh -c 'claude -p hi'`, which the rule cannot match [HN §5], record what happened: expected an authentication failure because the scrub removed the key (NOT CHECKED until this run). If it reached the model, the block is incomplete; record it as a finding and do not run T7 to T11 until it is decided. |
 
 **Regression**
 
@@ -302,22 +311,47 @@ The full mapping is in HARNESS_NOTES §7. Compared with the DeepSeek backend, th
 
 A later multi-agent version cannot be a port of agent teams, because Claude Code's agent teams are interactive-only [HN §2]. The realistic second step is lead plus subagents: drop `Agent` from the removed tools, add a `subagents` count to the `claude` object, cap concurrency with `CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS`, force waiting with `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1`, pass `--forward-subagent-text`, and count `Agent` calls from the stream. Peer-to-peer messaging between subagents in a headless run is NOT CHECKED [HN §7].
 
-## 10. Risks
+## 10. Self-hosted models on our own GPUs (works, unsupported)
+
+This path is not part of the first version and nothing here has been run. It is written down because profiling models on our own hardware may be the project's main interest (Open Question 1).
+
+**How it works.** SGLang serves `POST /v1/messages` and `POST /v1/messages/count_tokens` on every server with no extra flag, for any model, and documents running Claude Code against it [HN §6, SG]. With this plan's schema that means:
+
+| Setting | Value for an SGLang server |
+|---|---|
+| `baseUrl` | The server root, for example `http://host.docker.internal:30000`, reachable from the task container (the container already maps `host.docker.internal`, §6.2) |
+| `authHeader` | `bearer`. SGLang accepts any non-empty token when started without `--api-key` [SG]; the token still comes from the `apiKeyEnv` variable, never the config file |
+| `moduleName` | Any name; SGLang does not validate it [SG]. Use the served model's name so results are labelled correctly |
+| `contextWindow` | **Required in practice**: Claude Code does not know the model and would assume 1M [HN §1]. Do not add a `[1m]` suffix (SGLang's example does) unless the model really has a 1M window |
+| Extra environment | `CLAUDE_CODE_ATTRIBUTION_HEADER=0` (SGLang says its prefix cache needs it; the Claude Code docs disagree, NOT CHECKED, [HN §6]) and a raised `API_TIMEOUT_MS` [SG]. Neither is in the schema yet; add a `claude.gateway_env` option only if Open Question 1 says yes |
+| Server side | `--tool-call-parser` (and `--reasoning-parser` for reasoning models) matching the model; without the tool parser Claude Code cannot execute tool calls [SG] |
+
+**Unsupported.** Anthropic "doesn't support routing Claude Code to non-Claude models through any gateway" [HN §6, `https://code.claude.com/docs/en/llm-gateway`]. What that costs us:
+
+- **No fix path.** If a Claude Code release breaks against SGLang, nobody upstream owns it. Every version change needs the smoke test below before any benchmark run, and the pin (§5) becomes mandatory, not just good practice.
+- **The harness is tuned for Claude.** For an unrecognised model ID Claude Code sends the request fields of current Claude models (adaptive thinking, effort, context management) [HN §6]. SGLang may ignore or reject them; `CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1` and `CLAUDE_CODE_DISABLE_THINKING=1` are the documented levers [HN §6]. The Task tools are absent on unrecognised IDs [HN §2].
+- **Results mean something different.** A score measures "Claude Code's harness driving model X through a translation layer", not Claude Code as Anthropic ships it, and not model X in a harness built for it. Published results must say so.
+- **Controls weaken.** Cost estimates, and with them `max_budget_usd`, are likely meaningless for an unknown model (R6); use `max_turns` and the timeout. Feature flags cannot be fetched with a bearer token (D14 makes that moot).
+- **Prompt caching depends on SGLang**, not on Anthropic's cache [HN §4].
+
+**NOT CHECKED, all of it:** that tool calls, streaming (including `ping` events, [HN §6]) and compaction work end to end through SGLang with the pinned Claude Code version. Verify with one `jsonlines` run, `evaluate: false`, against an SGLang server on project GPUs serving a small approved model. Not GLM, even though SGLang's own example uses it. This test (T14) is not in section 8 and runs only if Open Question 1 approves the path.
+
+## 11. Risks
 
 | # | Risk | Mitigation |
 |---|---|---|
-| R1 | **Endpoint reach (largest).** Claude Code talks only to Anthropic-format endpoints, and Anthropic does not support non-Claude models behind a gateway [HN §6]. If the project's purpose is to profile models served on its own hardware, this backend may only ever run Claude models on Anthropic's hardware. Through a gateway there are known failure modes: 400s on fields the upstream rejects, a 1M context assumption, cache markers dropped without error [HN §1, §4, §6]. | Decide scope first (Open Question 1). The schema already carries `baseUrl`, `authHeader` and `contextWindow`. |
+| R1 | **Endpoint reach (largest).** Claude Code talks only to Anthropic-format endpoints, and Anthropic does not support non-Claude models behind a gateway [HN §6]. If the project's purpose is to profile models served on its own hardware, this backend may only ever run Claude models on Anthropic's hardware. Through a gateway there are known failure modes: 400s on fields the upstream rejects, a 1M context assumption, cache markers dropped without error [HN §1, §4, §6]. | Decide scope first (Open Question 1). Section 10 describes the self-hosted path and what it costs. The schema already carries `baseUrl`, `authHeader` and `contextWindow`. |
 | R2 | **Version drift.** Defaults change between releases: `-p` began starting in Manual mode at v2.1.302, and `--bare` is announced as the future default for `-p` [HN §5]. Transcript format is explicitly unstable [HN §5]. | Version pin enforced by image label; pass every behaviour-defining flag explicitly; read only the documented output stream, not transcripts. |
 | R3 | A run exits 0 without a successful result. | D7, T9. |
 | R4 | Root hosts cannot run the backend. | D5, T6; Open Question 6. |
 | R5 | Claude Code may write its own files into `/workspace` (for example a `.claude/` directory). **NOT CHECKED.** They would be copied into the evaluation workspace. | T7 lists the workspace. If anything appears, decide then; do not delete from `workspace/`, which is kept as generated. |
 | R6 | Cost caps may not work for unrecognised model IDs [HN §3]. | Use `max_turns` and the timeout as the real limits in gateway runs. |
 
-## 11. Open Questions
+## 12. Open Questions
 
 For supervisors. Each blocks or shapes the implementation.
 
-1. **Which models and endpoints is this backend for?** Claude models on the Anthropic API only, or also self-hosted non-Claude models through a translating gateway, which Anthropic does not support (R1)? Which cheap, non-GLM model is approved for the tests in section 8?
+1. **Which models and endpoints is this backend for?** (a) Claude models on the Anthropic API only; or (b) also non-Claude models on our own GPUs through SGLang's `/v1/messages` (section 10), which works by SGLang's account but is unsupported by Anthropic, with the costs listed there. If (b), which model and which SGLang parsers, and may we spend GPU time on test T14? Which cheap, non-GLM model is approved for the tests in section 8?
 2. **Is single-agent with delegation removed the right first baseline (D3)?** Or should Claude Code's default subagent delegation stay on? And is a lead-plus-subagents second stage wanted, given that agent teams cannot run headless?
 3. **Full harness or `--bare` (D4), and feature flags on or off (D14)?** Full keeps Claude Code's default system prompt and tool set; bare is leaner, more reproducible and the documented recommendation for scripted calls, but is a different system prompt and tool set. Flags off makes runs reproducible but leaves out flag-gated behaviour that interactive users get.
 4. **Should a run that hits the timeout, `max_turns` or the budget still be evaluated if it left code?** Today no backend evaluates such runs (`runner.py:83`). Changing it means editing shared code and affects all three backends.

@@ -26,9 +26,11 @@ curl -sSL https://code.claude.com/docs/en/headless.md | grep -n 'exits with code
 | ENV | `env-vars` | GWP | `llm-gateway-protocol` |
 | PC | `prompt-caching` | GWC | `llm-gateway-connect` |
 | CHG | `changelog` | HOST | `agent-sdk/hosting` |
-| SK | `skills` | | |
+| SK | `skills` | PERM | `permissions` |
 
 A section name after the key, such as [HL § Basic usage], is the heading on that page.
+
+Two sources outside the Claude Code docs: [SG] is SGLang's "Anthropic-Compatible API" page, `https://docs.sglang.io/docs/basic_usage/anthropic_api` (retrieved 2026-11-16); [DOCKER] is the Docker CLI reference for `docker container run`, `https://github.com/docker/cli/blob/master/docs/reference/commandline/container_run.md`.
 
 ## 1. Context compaction
 
@@ -54,7 +56,7 @@ Claude Code has four ways to start another agent: subagents, forked skills, dyna
 **Subagents** (the `Agent` tool)
 
 - A subagent runs in its own context window with its own system prompt and tool access, and returns only a summary to the caller. [SUB intro] [TOOLS § `Agent` row]
-- Its initial context is its own system prompt (not the Claude Code system prompt), the delegation message Claude writes, `CLAUDE.md` files and a git status snapshot. It does not see the parent's history. [SUB § What loads at startup]
+- Its initial context is its own system prompt (not the Claude Code system prompt), the delegation message Claude writes, `CLAUDE.md` files and a git status snapshot; the built-in Explore and Plan subagents start without `CLAUDE.md` and git status. It does not see the parent's history. [SUB § What loads at startup] [SUB § Built-in subagents]
 - Built-in types include `Explore` and `Plan` (read-only) and `general-purpose` (every tool available to subagents). Claude delegates on its own judgement. [SUB § Built-in subagents]
 - Custom subagents come from `--agents` JSON, `.claude/agents/`, `~/.claude/agents/` or plugins. [SUB § Choose the subagent scope] [CLI § `--agents`]
 - A subagent starts in the main conversation's working directory, so it shares the workspace unless its definition sets `isolation: worktree`. [SUB § Write subagent files]
@@ -102,9 +104,9 @@ Claude Code has four ways to start another agent: subagents, forked skills, dyna
 - SIGTERM: exit code 143, the running Bash command's process tree is terminated, and no result is recorded for the unfinished turn. [HL § Stop a run with SIGTERM]
 - After the final turn a `-p` run stays open for background work it started, by default up to 10 minutes of idle waiting (`CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS`). [HL § Background tasks at exit]
 - Bash tool commands time out after 2 minutes by default (`BASH_DEFAULT_TIMEOUT_MS`), with a model-settable maximum of 10 minutes (`BASH_MAX_TIMEOUT_MS`). [ENV]
-- Failed API requests are retried, 10 times by default (`CLAUDE_CODE_MAX_RETRIES`); each attempt has 10 minutes to return response headers (`API_TIMEOUT_MS`). [ENV] Each retry emits a `system` / `api_retry` event. [HL § Handle API retries]
+- Failed API requests are retried, 10 times by default (`CLAUDE_CODE_MAX_RETRIES`); each attempt has 10 minutes to return response headers (`API_TIMEOUT_MS`). [ENV] Each retry emits a `system` / `api_retry` event with the fields `type`, `subtype`, `attempt`, `max_retries`, `retry_delay_ms`, `error_status`, `no_response` (optional), `error`, `uuid` and `session_id`; none of them is a URL. [HL § Handle API retries]
 - Output size per request: `CLAUDE_CODE_MAX_OUTPUT_TOKENS`. For an unrecognised model ID the default is 32,000 and the cap 128,000. [ENV]
-- Reasoning depth: `--effort low|medium|high|xhigh|max`; available levels depend on the model. [CLI § `--effort`]
+- Reasoning depth: `--effort low|medium|high|xhigh|max` (also `ultracode`, which requests `xhigh` with ultracode on); available levels depend on the model. [CLI § `--effort`]
 - What fills the context before the task starts: system prompt, tool definitions, `CLAUDE.md`, auto memory and skill descriptions. [CTX § What the timeline shows] [LOOP § What consumes context]
 - A `Stop` hook that exits with code 2 prevents Claude from stopping and continues the conversation. [HOOKS § Exit code 2 behavior per event]
 
@@ -129,7 +131,7 @@ Claude Code has four ways to start another agent: subagents, forked skills, dyna
 - `--allowedTools` and `--disallowedTools` each take several space-separated values. [CLI, example column of those rows]
 - Output formats: `text`, `json` (one object with the result, session ID and metadata) and `stream-json` (newline-delimited JSON events). The last line of the stream is a `result` message. [HL § Get structured output] [HL § Stream responses]
 - Every documented `stream-json` example also passes `--verbose`. **NOT CHECKED:** whether `--verbose` is required with `-p --output-format stream-json`. Verify by running without it.
-- The stream starts with a `system` / `init` event carrying `model`, `tools`, `claude_code_version`, `permissionMode` and `apiKeySource`. [HL § Read session metadata] [TS § SDKSystemMessage]
+- A `system` / `init` event carries `model`, `tools`, `claude_code_version`, `permissionMode` and `apiKeySource`. It is the first event "unless startup events precede it", such as plugin-install or `SessionStart` hook events, so a reader must find it by `type` and `subtype`, not by position. [HL § Read session metadata] [TS § SDKSystemMessage]
 - The `result` event carries `subtype`, `is_error`, `num_turns`, `duration_ms`, `stop_reason`, `total_cost_usd`, `usage`, `modelUsage` (per model) and `permission_denials`; error subtypes add `errors`. [TS § SDKResultMessage]
 - `--json-schema` with `--output-format json` returns schema-validated output in `structured_output`. [HL § Get structured output]
 - **Permissions.** From v2.1.302 a `-p` run with no permission mode starts in Manual mode, where a tool call that needs approval is denied. [HL § Auto-approve tools] `--permission-mode bypassPermissions` (same as `--dangerously-skip-permissions`) is the documented way to run "fully unattended inside a container", and shows no dialog in non-interactive mode. [PM § Common setups] [PM § Skip all checks with bypassPermissions mode]
@@ -141,6 +143,8 @@ Claude Code has four ways to start another agent: subagents, forked skills, dyna
 - **Bare mode.** `--bare` skips hooks, skills, custom commands, subagents, plugins, MCP servers, auto memory and `CLAUDE.md`, gives Claude only the Bash, file read and file edit tools with a minimal system prompt, disables background tasks, and needs `ANTHROPIC_API_KEY` or an `apiKeyHelper`. The docs call it "the recommended mode for scripted and SDK calls" and say it "will become the default for `-p` in a future release". [HL § Start faster with bare mode] [ENV, `CLAUDE_CODE_SIMPLE` row]
 - **What `-p` loads without `--bare`.** The same as an interactive session, including anything in the working directory or `~/.claude`: hooks in a project's `.claude/settings.json` and servers in its `.mcp.json` run with no trust prompt. [HL § Start faster with bare mode]
 - **Background network traffic.** `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` set to any non-empty value disables auto-updates, telemetry, error reporting and release-note fetches. Setting it to `0` still disables them. [ENV] [GWC § Turn off traffic outside the gateway path]
+- **Credentials in subprocesses.** By default every Bash command inherits Claude Code's environment, including `ANTHROPIC_API_KEY`. `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1` removes credentials (by name or value shape, including `ANTHROPIC_API_KEY` and `CLAUDE_CONFIG_DIR`) from the environments of Bash commands, hooks and stdio MCP servers, while the Claude Code process keeps them for its own API calls. On Linux it also runs Bash subprocesses in an isolated PID namespace. The docs call it one layer, to use "alongside narrow permission rules". [ENV, `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB` row] [ENV § What the subprocess environment scrub removes] **NOT CHECKED:** that the PID namespace can be created as a non-root user in a default Docker container (no extra capabilities). Verify with PLAN test T13: Bash calls must still succeed.
+- **Deny rules.** Deny rules block in every permission mode, including `bypassPermissions`. [PM § Available modes] A Bash rule matches the command text as Claude writes it: `Bash(rm *)` stops `rm -rf build/` but not `/bin/rm -rf build/` or `bash -c 'rm -rf build/'`, so a deny rule "isn't a security boundary around the program". A deny rule also matches a command nested in a compound command, subshell or command substitution. [PERM § What a Bash rule doesn't match] [PERM § Compound commands] A scoped rule in `--disallowedTools` leaves the tool available and denies only matching calls. [CLI § `--disallowedTools`]
 - **Feature flags.** Claude Code turns some features on through flags it fetches from Anthropic. `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`, `DISABLE_TELEMETRY` and `CLAUDE_CODE_DISABLE_FEATURE_FLAGS` all stop that fetch, and so does authenticating to a non-Anthropic `ANTHROPIC_BASE_URL` with `ANTHROPIC_AUTH_TOKEN` and no API key. The documented flag-gated features include Remote Control, the advisor tool, MCP tasks and Code Mode. In the first session after an install a flag-gated feature can be missing, and a clean environment on every run makes every run a first session. [ENV § Features that need feature-flag fetching] [ENV § First session after an install or upgrade] **NOT CHECKED:** that the documented list is the complete set of flag-gated behaviour in a `-p` coding run. Verify by diffing the `system`/`init` event's `tools` between a run with fetching on (after a warm-up run on the same config directory) and one with it off.
 - Sizing guidance for one agent: 1 GiB RAM, 5 GiB disk, 1 CPU as a starting point. [HOST § Resources]
 
@@ -155,6 +159,7 @@ Claude Code has four ways to start another agent: subagents, forked skills, dyna
 - For an unrecognised model ID Claude Code sends everything current Claude models accept, including adaptive reasoning, effort and context-management fields. An upstream that rejects them returns `400`. `CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1` removes most pre-release fields but not the `thinking` field or `output_config.effort`. [GWP § Requests and defaults by connection method] [GWP § Disable pre-release capabilities] `CLAUDE_CODE_DISABLE_THINKING=1` omits the `thinking` parameter. [ENV]
 - The gateway must stream events as they arrive; one that buffers the whole response makes Claude Code stall. [GWP § Streaming]
 - Two requests bypass `ANTHROPIC_BASE_URL` and go to `api.anthropic.com`: the fast-mode availability check and the WebFetch domain safety check. [GWP § Optional endpoints and startup traffic]
+- **SGLang.** SGLang registers `POST /v1/messages` and `POST /v1/messages/count_tokens` on every server with no extra flag, for any model, and documents pointing Claude Code at it with `ANTHROPIC_BASE_URL` and a dummy `ANTHROPIC_AUTH_TOKEN`. It does not validate the request's `model` field. Without the right `--tool-call-parser` for the model, tool calls come back as text and Claude Code cannot execute them. It recommends `CLAUDE_CODE_ATTRIBUTION_HEADER=0`, saying the attribution block carries a per-request hash that defeats its prefix cache, and a raised `API_TIMEOUT_MS`. [SG] This contradicts the Claude Code docs, which say the block is stable for a conversation through a custom base URL from v2.1.181 [GWP § System prompt attribution block]. **NOT CHECKED** which is true for the pinned version; verify by comparing SGLang prefix-cache hit counts across two turns with and without the variable.
 - The `/v1/messages/count_tokens` endpoint is optional; without it Claude Code estimates context use by character count. [GWP § Optional endpoints and startup traffic]
 
 ## 7. Mapping the DeepSeek agent-teams model onto Claude Code

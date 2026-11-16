@@ -29,6 +29,8 @@ git diff d08501b 4bf6013                     # what the cleanup changed
 
 ## 2. Files touched (`781a1da` → `4bf6013`)
 
+This is the net diff of both commits. Two changes cancel or move between them: `d08501b` added `test_data_list.clear()` to `test_data_service.py` and `4bf6013` removed it again (`git diff --stat d08501b 4bf6013 -- test_data_service.py`), and `docker_self/docker_config.py` was deleted in `4bf6013`, not `d08501b`. So `git show --stat d08501b` alone does not match this table.
+
 | File | Change | Layer |
 |---|---|---|
 | `main.py` | Rewritten: argparse, `--config`, `--backend`, `--skip-evaluation`, dispatch | Integration |
@@ -53,7 +55,7 @@ The first backend addition also paid for a one-off refactor: `d08501b` extracted
 
 ### 3.1 Integration layer (the template)
 
-Shared code. A new backend calls it and should not need to change it.
+Shared code. A new backend calls it; the only shared edits are the registry and dispatch in `main.py` (rows 1 and 4 below), one `.gitignore` line and the readme (§2).
 
 | Concern | Where | What a backend does with it |
 |---|---|---|
@@ -91,6 +93,15 @@ Everything in `deepseek/`, plus three assets that live outside it by naming conv
 | `docker/deepseek.Dockerfile` | Image | Yes |
 | `scripts/build_deepseek.sh` | Image build | Yes |
 | `config.deepseek.example.json` | Example config | Yes |
+
+### 3.2a Other files a newcomer will meet
+
+| File | Classification |
+|---|---|
+| `template/config.template.toml` | OpenHands only; read at `openhands/openhands_app.py:37` |
+| `config.json` | The default `--config` (`main.py:17`). It has no `backend` key, so it is an OpenHands config (`main.py:27`) |
+| `test_data_service.py`, `logging_config.py`, `docker_self/docker_service.py` | Shared; a new backend uses them indirectly and does not edit them |
+| `only_test.py`, `tests/test_docker.py` | Standalone scripts; not used by `main.py` (see G15) |
 
 ### 3.3 The contract between the layers
 
@@ -157,7 +168,7 @@ A job that raises instead of returning still gets a result file, with `status = 
 
 - **G1. `startPro` model fields are parsed by the backend, not by shared code.** `runner.model_tasks` validates only `moduleName` and `proNameList`. `protocol`, `baseUrl` fallback to `NL2REPO_BASE_URL`, `apiKeyEnv` default `NL2REPO_API_KEY`, `contextWindow`, `maxTokens`, `reasoningEffort`, `reasoningEfforts` and `compat` are read only in `deepseek/config.py:16-51`. OpenHands reads `moduleName`, `apiKeyEnv`, `sk` and `baseUrl` and nothing else (`openhands/openhands_app.py:29-36`), and has no `apiKeyEnv` default. A new backend must write its own resolver.
 - **G2. The default `protocol` is `openai-completions`** (`deepseek/config.py:16`). That default is DeepSeek's, not the repo's.
-- **G3. A legacy inline key is still accepted.** `sk` is read at `deepseek/config.py:26` and `openhands/openhands_app.py:29`, and the shipped `config.json:6` still uses it. The key is returned separately from the public settings (`deepseek/config.py:52`) and reaches the container by variable name only (`deepseek/runner.py:54`), so it never enters the result JSON or `docker` argv.
+- **G3. A legacy inline key is still accepted.** `sk` is read at `deepseek/config.py:26` and `openhands/openhands_app.py:29`, and the shipped `config.json:6` still uses it. The key is returned separately from the public settings (`deepseek/config.py:52`) and reaches the container by variable name only (`deepseek/runner.py:54`), so it never enters the result JSON or `docker` argv. It is, however, in the agent's own environment (`deepseek/runner.py:45,54`), so anything the agent writes, such as the output of `env` or a `.env` file, can carry it into run artifacts.
 - **G4. Endpoint details are kept out of error text.** `docker_self/batch_container.py:62-63` deliberately does not stringify `CalledProcessError` because its argv may contain them.
 - **G5. Timed-out and failed generations are never evaluated**, even if the workspace holds usable code (`runner.py:83`). A timeout therefore reports `score: null`, not a low score.
 - **G6. `status` is not pass or fail.** It means every requested stage ran. `score` is the count of passed tests (`runner.py:100`); there is no threshold.

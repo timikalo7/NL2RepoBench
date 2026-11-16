@@ -1,3 +1,17 @@
+# Triage of the third evaluation (added 2026-11-16, before the targeted fix round)
+
+The independent evaluation below is unchanged. This triage sorts its 11 required fixes (F1 to F11, in "Required fixes" at the end).
+
+| Group | Findings | Why |
+|---|---|---|
+| (a) Must fix before any implementation | F1 (API key readable by the agent), F2 (`NL2REPO_BASE_URL` fallback), F3 (single-agent claim; nested `claude` from Bash), F6 (`init` event found by position) | Each would cause harm or a wrong result once code exists: a leaked key in published artifacts, a paid run sent to the wrong endpoint, an unnoticed second agent, a reader that misses its key event |
+| (b) Wording or source fixes | F4 (`--init` and SIGTERM), F5 (flag-gated feature list), F7 (`api_retry` cross-reference), F8 (ANALYSIS §3.1 first sentence), F9 (net diff), F10 (unclassified files), F11 (Explore and Plan context; `ultracode`) | The design is unaffected; the text overstated, misquoted or omitted a source |
+| (c) Can wait until the open questions are answered | None of the 11 as a whole. Two residual parts: whether flag-gated features should stay off (F5's underlying trade-off, Open Question 3), and whether the scrub's PID namespace works as a non-root user in a default container (F1, NOT CHECKED until test T13 runs) | Neither can be settled by editing documents |
+
+Fix status: all of (a) and (b) addressed in the targeted round; see the commit that adds this triage.
+
+---
+
 # Independent evaluation of the Claude Code backend docs
 
 Evaluated: `ANALYSIS.md`, `HARNESS_NOTES.md` and `PLAN.md` in this directory, at commit `fdba918` on branch `feat/claude-code-backend`, against base `main` = `bbd664b`. Date: 2026-11-15.
