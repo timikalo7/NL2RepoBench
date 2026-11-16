@@ -123,3 +123,27 @@ The analysis is accurate. Every citation checked resolves to what the docs say, 
 9. **ANALYSIS §2: say the table is a net diff.** `d08501b` also added `test_data_list.clear()` to `test_data_service.py`, and `4bf6013` removed it (`git diff --stat d08501b 4bf6013` shows `test_data_service.py | 1 -`). `docker_self/docker_config.py` was deleted in `4bf6013`, not in `d08501b`. Without this line, `git show --stat d08501b` appears to contradict the table.
 10. **ANALYSIS §3: classify the remaining key files.** The brief names `template/` and `config.json`. `template/config.template.toml` is OpenHands-only (read at `openhands/openhands_app.py:37`). `config.json` is the default `--config` (`main.py:17`) and an OpenHands config, since it has no `backend` key. `test_data_service.py`, `logging_config.py` and `docker_self/docker_service.py` are shared and untouched by a new backend.
 11. **HARNESS_NOTES precision.** (a) §2: the subagent's initial context includes `CLAUDE.md` and git status except for Explore and Plan, which start without both (`sub-agents`, line 33 of the downloaded page). (b) §3: `--effort` also accepts `ultracode` (`cli-reference`, `--effort` row). Neither changes the plan. Fix 6 covers the third imprecision.
+
+## Targeted re-check of fea61df
+
+Scope: `git diff 0ecaaf4 fea61df -- docs/claude-backend/` only. Sources re-downloaded 2026-11-16: `env-vars`, `permissions`, `permission-modes`, `llm-gateway-protocol`, `cli-reference`, `headless` (code.claude.com raw `.md`), SGLang `anthropic_api`, Docker `container_run.md` (raw from master). Nothing run, no paid API called.
+
+| Item | Status | Evidence |
+|---|---|---|
+| F1 key readable by agent | FIXED | PLAN §5 image env and D8 add `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1`; HN §5 states it with `[ENV]` sources (env-vars.md:555, :565, :575 confirm "one layer alongside narrow permission rules", `CLAUDE_CONFIG_DIR` removed, Linux PID namespace); PID namespace as non-root marked NOT CHECKED; T7 adds Bash-succeeds and `grep -rlF` conditions. ANALYSIS G3 line: present in diff. |
+| Lead: scrub + `env` test | FIXED | New T13 runs `env` through Bash; passes only if no `ANTHROPIC_API_KEY`/`ANTHROPIC_AUTH_TOKEN` line appears and the key grep prints nothing. |
+| F2 / lead: `NL2REPO_BASE_URL` fallback | FIXED | PLAN 4.2: `baseUrl` required, "deliberately no fallback", missing/empty fails config validation before any container starts; example config uses `https://api.anthropic.com`; T2 adds "`baseUrl` empty while `NL2REPO_BASE_URL` is exported". Cited `deepseek/config.py:20` and `readme.md:32` verified. |
+| F3 / lead: nested `claude` blocked by rule, tested | FIXED | D3 and §6.2: `--disallowedTools ... "Bash(claude *)" "Bash(*/claude *)"`; deny holds in `bypassPermissions` (permission-modes.md:30), scoped rule leaves tool available (cli-reference.md:87), leading `*` is valid (permissions.md:178). T13 checks `permission_denials` for both forms; `sh -c` gap stated as unmatched (permissions.md:252-257) and NOT CHECKED. §1 reworded. |
+| F4 / lead: `--init` SIGTERM | FIXED | Cited Docker reference `--init` row: "Run an init inside the container that forwards signals and reaps processes" (container_run.md:60), matches. Exit within 10 s grace marked NOT CHECKED (T10). |
+| F5 / lead: flag-gated list | FIXED | D14 now says sixteen items and names several; counted 16 bullets under "With fetching off, you can't" in env-vars.md. Completeness marked NOT CHECKED. |
+| F6 / lead: init event by type | FIXED | HN §5 quotes "unless startup events precede it" (headless.md, Read session metadata, matches); PLAN §7 says reader finds events by `type`/`subtype`, never line number. |
+| F7 `api_retry` cross-ref | FIXED | HN §3 now lists the fields with `[HL § Handle API retries]`, so T4's `[HN §3]` resolves. |
+| F8 ANALYSIS §3.1 sentence | FIXED | Reworded to name `main.py` registry/dispatch, `.gitignore`, readme. |
+| F9 net diff | FIXED | ANALYSIS §2 adds the net-diff paragraph with both details. |
+| F10 unclassified files | FIXED | ANALYSIS §3.2a; `openhands/openhands_app.py:37`, `main.py:17`, `main.py:27` verified. |
+| F11 HN precision | FIXED | §2 Explore/Plan exception added; §3 `--effort` lists `ultracode`. |
+| Lead: SGLang section + OQ1 | FIXED | PLAN §10 "Self-hosted models on our own GPUs (works, unsupported)" with costs list and NOT CHECKED T14; §12 OQ1 option (b). SGLang claims spot-checked on the page: route on every server with no extra flag, any model, no `model` validation, `--api-key`/dummy token, tool calls returned as text without `--tool-call-parser`, per-request hash in attribution block, raised `API_TIMEOUT_MS`: all present. Contradiction with llm-gateway-protocol.md:201 (v2.1.181) correctly recorded and NOT CHECKED. |
+
+New unsourced claims in the diff: none found. Minor wording note only: SGLang labels `CLAUDE_CODE_ATTRIBUTION_HEADER=0` "Required", which HN §6 softens to "recommends"; not a factual error.
+
+Verdict: all F1 to F11 and all six lead requirements are fixed in fea61df; no new unsourced claims.
