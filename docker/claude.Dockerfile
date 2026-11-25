@@ -2,8 +2,9 @@ FROM node:24-bookworm AS node-runtime
 FROM python:3.12-bookworm
 
 COPY --from=node-runtime /usr/local/ /usr/local/
+# bubblewrap: Claude Code refuses to start with CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1 without it (found in T4).
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential git ripgrep ca-certificates \
+    build-essential git ripgrep ca-certificates bubblewrap \
     && rm -rf /var/lib/apt/lists/*
 
 # A global npm install sits under /usr/local, readable by whatever uid runs the task (PLAN D12).
