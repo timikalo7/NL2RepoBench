@@ -6,10 +6,22 @@ Every result here is "Claude Code driving Qwen through LiteLLM", or a free test 
 
 - The backend is implemented to PLAN.md and pinned at Claude Code **2.1.325**.
 - Free tests T1, T2, T3, T4, T5, T6 and T12 **all pass**. T4 passes after the D8 update (session 2, below): it failed in session 1.
-- The D8 decision is implemented. The scrub stays on; the container runs as uid 1000 with no added capabilities, under `docker/claude-seccomp.json` plus `--security-opt systempaths=unconfined`. A side effect: Claude Code then forces the permission mode to `default`, so the backend now also declares `--allowedTools Bash Read Edit Write`. That this works with a real model is NOT CHECKED.
+- The D8 decision is implemented. The scrub stays on; the container runs as uid 1000 with no added capabilities, under `docker/claude-seccomp.json` plus `--security-opt systempaths=unconfined`. A side effect: Claude Code then forces the permission mode to `default`, so the backend now also declares `--allowedTools Bash Read Edit Write` (approved by Timi, session 3). That this works with a real model is NOT CHECKED.
 - The approved grader sentence is in `claude/prompt.txt` and PLAN §6.3.
 - **Still blocked:** ELM returns 401 to `GET /models` and `GET /costs`, because this session's environment ("Default") lists no network secrets. So the LiteLLM check, the gateway smoke runs, and T13, T9, T10, T7 and T11 have not run. T8 is not run (optional). Part B has not started.
 - **ELM spend: none.**
+
+## Session 3 (2026-11-25, after 13:28)
+
+| Check | Result |
+|---|---|
+| Branch | `feat/claude-code-backend` at `abbf953` on `mine`, working tree clean |
+| uid 1000 setup, LiteLLM key file, clone | Still present (`ubuntu` in group `docker`; `/home/ubuntu/.litellm_master_key`; `/home/ubuntu/NL2RepoBench`) |
+| `dockerd` | Not running at session start; not started, as nothing in this session needed Docker |
+| ELM | `GET https://elm.edina.ac.uk/api/v1/models` returns **401**. The environment ("Default", `env_01BF7d6TsgNYEEDNGR56eKuY`) still lists `network_secrets: []` |
+| `--allowedTools` | Timi's approval recorded in PLAN's D8 update row and above |
+
+Per the brief, the 401 is a stop condition: no LiteLLM check, smoke run or paid test ran. ELM spend: none.
 
 ## Phase 0
 
@@ -107,7 +119,7 @@ The same session-only wrapper (see "Build wrapper used for T3" above) rebuilt `n
 
 ### New finding: the scrub forces the permission mode to default
 
-After the D8 options, T4's `stderr.log` showed: "⚠ Permission mode forced to default — CLAUDE_CODE_SUBPROCESS_ENV_SCRUB is set (allowed_non_write_users hardening). Declare allowedTools explicitly, or set CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=0 to opt out." The `init` event reports `permissionMode: "default"`, with or without `--allowedTools`. In `-p` mode, tools not covered by an allow rule would be denied, so the backend now passes `--allowedTools Bash Read Edit Write` (commit `6707f21`; PLAN D8 update). **NOT CHECKED** until a model run: that these tools then run unprompted. T13 and T7 check it through `permission_denials`. **Timi: this adds an element to D8 that you didn't explicitly approve; say if you'd rather handle it differently.**
+After the D8 options, T4's `stderr.log` showed: "⚠ Permission mode forced to default — CLAUDE_CODE_SUBPROCESS_ENV_SCRUB is set (allowed_non_write_users hardening). Declare allowedTools explicitly, or set CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=0 to opt out." The `init` event reports `permissionMode: "default"`, with or without `--allowedTools`. In `-p` mode, tools not covered by an allow rule would be denied, so the backend now passes `--allowedTools Bash Read Edit Write` (commit `6707f21`; PLAN D8 update). **NOT CHECKED** until a model run: that these tools then run unprompted. T13 and T7 check it through `permission_denials`. **Approved by Timi on 2026-11-25 (session 3 brief)** and recorded in PLAN's D8 update row.
 
 ### T4 and T5, re-run
 
