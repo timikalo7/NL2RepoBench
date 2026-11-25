@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 
 from claude.config import model_environment, resolve_model
-from claude.runner import DISALLOWED_TOOLS, SECCOMP_PROFILE, _claude_arguments, _docker_arguments, _gateway_env
+from claude.runner import ALLOWED_TOOLS, DISALLOWED_TOOLS, SECCOMP_PROFILE, _claude_arguments, _docker_arguments, _gateway_env
 from claude.session_summary import summarize_run
 
 INIT = {"type": "system", "subtype": "init", "model": "m", "tools": ["Bash", "Read"], "claude_code_version": "2.1.325"}
@@ -70,6 +70,8 @@ class LaunchArgumentsTest(unittest.TestCase):
         self.assertEqual(args[:2], ["-p", "do it"])
         self.assertEqual(args[-len(DISALLOWED_TOOLS) - 1:], ["--disallowedTools", *DISALLOWED_TOOLS])
         self.assertIn("Bash(claude *)", args)
+        start = args.index("--allowedTools")
+        self.assertEqual(args[start:start + len(ALLOWED_TOOLS) + 1], ["--allowedTools", *ALLOWED_TOOLS])
 
     def test_gateway_env_rejects_reserved_and_secret_names(self):
         self.assertEqual(_gateway_env({"API_TIMEOUT_MS": "600000"}), ["API_TIMEOUT_MS=600000"])

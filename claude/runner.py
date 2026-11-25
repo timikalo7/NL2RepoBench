@@ -22,6 +22,9 @@ SECCOMP_PROFILE = PACKAGE_DIR.parent / "docker" / "claude-seccomp.json"
 # bwrap needs both: the profile alone cannot mount /proc, systempaths alone cannot create namespaces.
 SECURITY_OPTIONS = ["--security-opt", f"seccomp={SECCOMP_PROFILE}", "--security-opt", "systempaths=unconfined"]
 OPTION_KEYS = {"image", "task_timeout_seconds", "max_turns", "max_budget_usd", "prompt_file", "gateway_env"}
+# With CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1, Claude Code 2.1.325 forces the permission mode to default and
+# asks for allowedTools to be declared (T4, 2026-11-25); these are the tools a coding run needs.
+ALLOWED_TOOLS = ["Bash", "Read", "Edit", "Write"]
 # Tools that start another agent, web tools, and nested Claude Code runs (PLAN D3, D11, §6.2).
 DISALLOWED_TOOLS = ["Agent", "Workflow", "Skill", "WebSearch", "WebFetch", "Bash(claude *)", "Bash(*/claude *)"]
 # gateway_env may not override what the backend sets itself, and is for non-secret settings only.
@@ -105,7 +108,7 @@ def _claude_arguments(model: dict, options: dict) -> list:
         arguments += ["--max-turns", str(options["max_turns"])]
     if "max_budget_usd" in options:
         arguments += ["--max-budget-usd", str(options["max_budget_usd"])]
-    return arguments + ["--disallowedTools", *DISALLOWED_TOOLS]
+    return arguments + ["--allowedTools", *ALLOWED_TOOLS, "--disallowedTools", *DISALLOWED_TOOLS]
 
 
 def _docker_arguments(workspace: Path, home: Path, model: dict, secret_env: dict,
