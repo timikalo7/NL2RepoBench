@@ -6,7 +6,7 @@ NL2Repo is a benchmark designed to evaluate the performance of Large Language Mo
 
 ## Running the Code
 
-The runner supports **DeepSeek Harness with Agent Teams** and **OpenHands** in headless batch mode. Select a backend with `backend` in the JSON configuration or `--backend`. Existing configurations without that field continue to use OpenHands.
+The runner supports **DeepSeek Harness with Agent Teams**, **Claude Code** (single agent) and **OpenHands** in headless batch mode. Select a backend with `backend` in the JSON configuration or `--backend`. Existing configurations without that field continue to use OpenHands.
 
 Both backends use local Docker containers. Python launches generation through the Docker CLI; the existing benchmark evaluator uses `python-on-whales`. Use Python 3.10 or newer and a running Docker daemon. Model endpoints must be reachable from inside Docker.
 
@@ -76,6 +76,25 @@ Generation captures stdout, stderr, container status, and all persisted agent se
 These checks are reported in `team.status`. They record whether the requested workflow occurred; they do not establish code correctness or the quality of the collaboration, and they do not affect `status` or evaluation. The harness exits as soon as the lead finishes, so the prompt requires the lead to call `wait_agent` on every teammate first.
 
 The task container has shell and filesystem access within its own runtime, with no interactive approvals. It mounts only that task's workspace and harness state. Session upload and external search are disabled in this profile.
+
+### Claude Code setup
+
+The `claude` backend runs Claude Code (pinned in `scripts/build_claude.sh` and `claude/runner.py`) headless in a local image, one container per task, as a single agent. Design and decisions: `docs/claude-backend/PLAN.md`; test results: `docs/claude-backend/TEST_RESULTS.md`.
+
+```sh
+bash scripts/build_claude.sh
+cp config.claude.example.json config.claude.json
+export NL2REPO_API_KEY='your-key'
+python main.py --config config.claude.json
+```
+
+- `baseUrl` is required (no `NL2REPO_BASE_URL` fallback). Claude Code speaks only the Anthropic Messages format, so a non-Anthropic endpoint needs a gateway that serves `/v1/messages`.
+- `authHeader` is `x-api-key` (default) or `bearer`; the key is read from the variable named by `apiKeyEnv` and never written to a file.
+- Set `contextWindow` for any model that is not a Claude model; otherwise Claude Code assumes 1M tokens.
+- The backend refuses to run as root. Run it as an unprivileged user in the `docker` group.
+- The `claude` object takes `image`, `task_timeout_seconds`, `max_turns`, `max_budget_usd`, `prompt_file` (tests only) and `gateway_env`.
+
+Artifacts per task: `workspaces/<task-model-uuid>/` holds `workspace/`, `prompt.txt`, `stdout.jsonl` (stream-json events), `stderr.log`, `container.log` and `claude-home/` (Claude Code config and transcripts). The result JSON carries a `claude` block summarising the run; `status` is `completed` only when the stream ends in a successful result event.
 
 ### OpenHands setup
 
