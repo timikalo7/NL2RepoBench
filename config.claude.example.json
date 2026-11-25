@@ -1,0 +1,17 @@
+{
+  "backend": "claude",
+  "evaluate": false,
+  "max_pool_size": 1,
+  "claude": {
+    "task_timeout_seconds": 7200
+  },
+  "startPro": [
+    {
+      "moduleName": "YOUR_MODEL_ID",
+      "protocol": "anthropic-messages",
+      "baseUrl": "https://api.anthropic.com",
+      "apiKeyEnv": "NL2REPO_API_KEY",
+      "proNameList": ["jsonlines"]
+    }
+  ]
+}

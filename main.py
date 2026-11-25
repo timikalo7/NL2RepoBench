@@ -9,7 +9,7 @@ from logging_config import get_logger
 import test_data_service
 
 logger = get_logger(__name__)
-BACKENDS = ("openhands", "deepseek")
+BACKENDS = ("openhands", "deepseek", "claude")
 
 
 def main() -> int:
@@ -33,6 +33,9 @@ def main() -> int:
     if backend == "deepseek":
         from deepseek.runner import start_deepseek
         results = start_deepseek(config)
+    elif backend == "claude":
+        from claude.runner import start_claude
+        results = start_claude(config)
     else:
         from openhands.openhands_app import start_openhands
         results = start_openhands(config)

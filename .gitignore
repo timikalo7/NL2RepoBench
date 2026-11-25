@@ -5,6 +5,7 @@ __pycache__/
 .env
 .env.*
 config.deepseek.json
+config.claude.json
 workspaces/
 result/
 logs/
