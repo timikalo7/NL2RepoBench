@@ -21,7 +21,9 @@ In scope:
 Out of scope for the first version:
 
 - Any multi-agent mode. See section 9 for what that loses and why.
-- Non-Claude models behind a translating gateway. The backend will not block them, but they are untested and unsupported by Anthropic (risk R1, section 10).
+- Non-Claude models behind a translating gateway, **for real benchmark runs**. The backend does not block them and stays endpoint-agnostic; they are unsupported by Anthropic (risk R1, section 10).
+
+**Scope change, 2026-11-25 (Timi Kalejaiye, after the 20 Nov meeting).** There is no Anthropic or DeepSeek key, so *testing* goes through a gateway and a non-Claude model: Claude Code → LiteLLM proxy on the Docker host (Anthropic `/v1/messages` in, OpenAI `/chat/completions` out) → ELM (`https://elm.edina.ac.uk/api/v1`) serving `Qwen/Qwen3.5-397B-A17B-FP8` (262,144-token context, shared by input and output). LiteLLM is test infrastructure only and is not part of the backend. Never GLM. Every result from this path is labelled "Claude Code driving Qwen through LiteLLM". See section 8 and `TEST_RESULTS.md`.
 
 ## 2. Decisions
 
@@ -55,6 +57,7 @@ New files:
 | `claude/runner.py` | `start_claude(config)`, `_run_task(...)`, `_image_info(image)`, and the version pin | `deepseek/runner.py` |
 | `claude/session_summary.py` | `summarize_run(stdout_path)`: reads `stdout.jsonl`, returns the `claude` block of the result | `deepseek/session_summary.py` |
 | `claude/prompt.txt` | Task prompt | `deepseek/prompt.txt:1` |
+| `tests/test_claude_backend.py` | Offline unit checks, including T5 (added 2026-11-25 so the checks are re-runnable) | none |
 | `docker/claude.Dockerfile` | Image | `docker/deepseek.Dockerfile` |
 | `scripts/build_claude.sh` | Image build | `scripts/build_deepseek.sh` |
 | `config.claude.example.json` | Example config | `config.deepseek.example.json` |
@@ -83,6 +86,7 @@ Untouched: `runner.py`, `docker_self/`, `openhands/`, `deepseek/`, `test_data_se
 | `max_turns` | positive int | none | `--max-turns` [HN §3] |
 | `max_budget_usd` | positive number | none | `--max-budget-usd` [HN §3] |
 | `prompt_file` | path | `claude/prompt.txt` | Prompt to send. For tests such as T13 only; benchmark runs leave it unset |
+| `gateway_env` | object of `NAME: "value"` strings | `{}` | Extra `--env NAME=value` pairs for a gateway path (section 10), for example `API_TIMEOUT_MS` or `CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS`. Rejects names the backend sets itself and names that look like credentials (`KEY`, `TOKEN`, `SECRET`, `PASSWORD`, `CREDENTIAL`). Added 2026-11-25 for the ELM test path; which values it needs is decided by the gateway smoke runs, and the option is removed again if they need none (`TEST_RESULTS.md`) |
 
 Unknown keys are an error. `max_pool_size` and `evaluate` stay top-level, as for DeepSeek (`deepseek/runner.py:74-75`); `max_pool_size` defaults to 1.
 
@@ -144,7 +148,7 @@ The README must say: set `contextWindow` for any model that is not a Claude mode
 
 `docker/claude.Dockerfile`, built by `scripts/build_claude.sh`:
 
-- Base and system packages identical to `docker/deepseek.Dockerfile:1-7`: `python:3.12-bookworm`, `/usr/local` copied from `node:24-bookworm`, then `build-essential git ripgrep ca-certificates`.
+- Base and system packages as in `docker/deepseek.Dockerfile:1-7`: `python:3.12-bookworm`, `/usr/local` copied from `node:24-bookworm`, then `build-essential git ripgrep ca-certificates`, **plus `bubblewrap`** (added 2026-11-25: Claude Code 2.1.325 refuses to start with `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1` without it, found in T4; see `TEST_RESULTS.md`). Even with it, bwrap cannot create its namespace as a non-root user under Docker's default security options; **this blocks D8 as designed and is an open decision** (`TEST_RESULTS.md`, "Design decision needed").
 - Build argument `CLAUDE_CODE_VERSION`; `npm install --global @anthropic-ai/claude-code@$CLAUDE_CODE_VERSION`; then `claude --version` as a build step so a missing binary fails the build.
 - Label `org.nl2repobench.harness-revision=$CLAUDE_CODE_VERSION`, the same label key DeepSeek uses (`docker/deepseek.Dockerfile:18`). `claude/runner.py:_image_info` rejects an image whose label does not equal the pin. DeepSeek uses a prefix match instead (`startswith`, `deepseek/runner.py:29`), because its build writes the full commit SHA into the label while the pin is the short form (`scripts/build_deepseek.sh:5,9,14`). Here the label and the pin are the same version string, so exact equality is correct.
 - Environment baked into the image, mirroring `docker/deepseek.Dockerfile:19`: `CLAUDE_CONFIG_DIR=/claude-home/config`, `DISABLE_AUTOUPDATER=1`, `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`, `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1` [HN §5]. `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` also turns off feature-flag fetching (D14); the scrub keeps the key out of Bash commands (D8).
@@ -256,6 +260,8 @@ The reader finds each event by its `type` and `subtype`, never by line number: t
 
 ## 8. Test plan
 
+**Test model (2026-11-25):** `Qwen/Qwen3.5-397B-A17B-FP8` on ELM through LiteLLM (section 1). Pass conditions that assume a Claude model on the Anthropic API are adapted per test and recorded in `TEST_RESULTS.md`: `max_budget_usd` stays unset (R6), runs are capped with `max_turns` and `task_timeout_seconds`, and Claude-only behaviour (one `model_usage` key, compaction, `result_subtype` values) is reported as observed or NOT CHECKED, never as a backend failure. Up to 3 gateway smoke runs (`jsonlines`, `max_turns: 2`) settle `claude.gateway_env` before T13; T8 is not run.
+
 Constraints: cheap models only, never GLM, never the full task set. Two sample tasks, `jsonlines` and `records`: both are labelled Easy in `test_files/task_difficulty.csv`, have the two smallest specifications in the set (15 to 16 KB; `wc -c test_files/*/start.md | sort -n | head -3`) and 27 and 31 tests (`test_case_count.txt`). `jsonlines` is also the task the DeepSeek commit messages report being checked with. Total paid usage: at most seven runs, four of them full generations of an Easy task and one (T13) a short scripted run.
 
 Which model to use is Open Question 1. The plan assumes one inexpensive Claude model reached directly on the Anthropic API.
@@ -350,6 +356,14 @@ This path is not part of the first version and nothing here has been run. It is 
 ## 12. Open Questions
 
 For supervisors. Each blocks or shapes the implementation.
+
+**Status, 2026-11-25** (recorded by Timi Kalejaiye's instruction):
+
+- **Q1:** answered for testing only: Qwen on ELM through LiteLLM (section 1). Which model for real runs stays open.
+- **Q2: closed.** A single agent is approved for pipeline testing (Yinsicheng, supervisor). D3 stands.
+- **Q3, Q5, Q6:** default chosen, confirm Friday. Working defaults (Timi's, not supervisor decisions): keep D4 and D14; pin the Claude Code version current at build time (2.1.325); keep D5 (tests run as uid 1000).
+- **Q4:** keep the current rule; it is shared code, so it already matches the DeepSeek backend.
+- **Q7:** open.
 
 1. **Which models and endpoints is this backend for?** (a) Claude models on the Anthropic API only; or (b) also non-Claude models on our own GPUs through SGLang's `/v1/messages` (section 10), which works by SGLang's account but is unsupported by Anthropic, with the costs listed there. If (b), which model and which SGLang parsers, and may we spend GPU time on test T14? Which cheap, non-GLM model is approved for the tests in section 8?
 2. **Is single-agent with delegation removed the right first baseline (D3)?** Or should Claude Code's default subagent delegation stay on? And is a lead-plus-subagents second stage wanted, given that agent teams cannot run headless?
