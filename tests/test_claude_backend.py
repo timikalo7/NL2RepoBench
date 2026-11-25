@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 
 from claude.config import model_environment, resolve_model
-from claude.runner import DISALLOWED_TOOLS, _claude_arguments, _gateway_env
+from claude.runner import DISALLOWED_TOOLS, SECCOMP_PROFILE, _claude_arguments, _docker_arguments, _gateway_env
 from claude.session_summary import summarize_run
 
 INIT = {"type": "system", "subtype": "init", "model": "m", "tools": ["Bash", "Read"], "claude_code_version": "2.1.325"}
@@ -76,6 +76,40 @@ class LaunchArgumentsTest(unittest.TestCase):
         for bad in ({"ANTHROPIC_BASE_URL": "x"}, {"MY_API_KEY": "x"}, {"lower": "x"}, {"A": 1}):
             with self.assertRaises(ValueError):
                 _gateway_env(bad)
+
+
+class DockerArgumentsTest(unittest.TestCase):
+    def setUp(self):
+        self.args = _docker_arguments(Path("/w"), Path("/h"), {"model": "m", "context_window": 262144},
+                                      {"ANTHROPIC_AUTH_TOKEN": "dummy-value", "ANTHROPIC_BASE_URL": "http://h:4000"},
+                                      {"prompt": "p", "gateway_env": ["API_TIMEOUT_MS=1"]}, {"id": "sha256:img"})
+
+    def test_security_options_and_no_privilege(self):
+        self.assertIn(f"seccomp={SECCOMP_PROFILE}", self.args)
+        self.assertIn("systempaths=unconfined", self.args)
+        self.assertTrue(SECCOMP_PROFILE.is_file())
+        for forbidden in ("--privileged", "--cap-add", "seccomp=unconfined"):
+            self.assertNotIn(forbidden, self.args)
+        self.assertEqual(self.args[:2], ["--init", "--user"])
+
+    def test_secrets_passed_by_name_only(self):
+        self.assertNotIn("dummy-value", " ".join(self.args))
+        self.assertIn("ANTHROPIC_AUTH_TOKEN", self.args)
+        self.assertIn("ANTHROPIC_BASE_URL", self.args)
+
+    def test_image_precedes_claude_arguments(self):
+        position = self.args.index("sha256:img")
+        self.assertEqual(self.args[position + 1:position + 3], ["-p", "p"])
+        self.assertIn("API_TIMEOUT_MS=1", self.args[:position])
+        self.assertEqual(self.args[position - 2:position], ["--add-host", "host.docker.internal:host-gateway"])
+
+    def test_seccomp_profile_extends_default(self):
+        profile = json.loads(SECCOMP_PROFILE.read_text())
+        self.assertEqual(profile["defaultAction"], "SCMP_ACT_ERRNO")
+        added = profile["syscalls"][-1]
+        self.assertEqual(sorted(added["names"]),
+                         ["clone", "mount", "pivot_root", "sethostname", "umount2", "unshare"])
+        self.assertNotIn("includes", added)
 
 
 class ResolveModelTest(unittest.TestCase):

@@ -16,6 +16,11 @@ from .session_summary import summarize_run
 CLAUDE_CODE_VERSION = "2.1.325"
 DEFAULT_IMAGE = f"nl2repobench-claude:{CLAUDE_CODE_VERSION}"
 PACKAGE_DIR = Path(__file__).parent
+# Docker's default seccomp profile (moby/profiles seccomp v0.2.4, vendored by Docker 29.9.2) plus one rule
+# that lets bubblewrap create namespaces without CAP_SYS_ADMIN (PLAN D8, §6.2, dated 2026-11-25).
+SECCOMP_PROFILE = PACKAGE_DIR.parent / "docker" / "claude-seccomp.json"
+# bwrap needs both: the profile alone cannot mount /proc, systempaths alone cannot create namespaces.
+SECURITY_OPTIONS = ["--security-opt", f"seccomp={SECCOMP_PROFILE}", "--security-opt", "systempaths=unconfined"]
 OPTION_KEYS = {"image", "task_timeout_seconds", "max_turns", "max_budget_usd", "prompt_file", "gateway_env"}
 # Tools that start another agent, web tools, and nested Claude Code runs (PLAN D3, D11, §6.2).
 DISALLOWED_TOOLS = ["Agent", "Workflow", "Skill", "WebSearch", "WebFetch", "Bash(claude *)", "Bash(*/claude *)"]
@@ -103,6 +108,26 @@ def _claude_arguments(model: dict, options: dict) -> list:
     return arguments + ["--disallowedTools", *DISALLOWED_TOOLS]
 
 
+def _docker_arguments(workspace: Path, home: Path, model: dict, secret_env: dict,
+                      options: dict, image: dict) -> list:
+    """docker create arguments in PLAN §6.2 order; no added capabilities, never --privileged."""
+    arguments = [
+        "--init",
+        "--user", f"{os.getuid()}:{os.getgid()}",
+        *SECURITY_OPTIONS,
+        "--volume", f"{workspace}:/workspace:rw",
+        "--volume", f"{home}:/claude-home:rw",
+        "--env", "HOME=/claude-home/user",
+        "--env", "PATH=/claude-home/user/.local/bin:/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin",
+    ]
+    for name in secret_env:
+        arguments += ["--env", name]  # Name only: the value never enters argv.
+    for pair in model_environment(model) + options["gateway_env"]:
+        arguments += ["--env", pair]
+    return arguments + ["--add-host", "host.docker.internal:host-gateway", image["id"],
+                        *_claude_arguments(model, options)]
+
+
 def _run_task(run_id: str, test_data, model: dict, secret_env: dict,
               options: dict, image: dict, evaluate: bool) -> dict:
     run_dir = Path("workspaces").resolve() / run_id
@@ -115,19 +140,7 @@ def _run_task(run_id: str, test_data, model: dict, secret_env: dict,
     (run_dir / "prompt.txt").write_text(options["prompt"] + "\n", encoding="utf-8")
     # Secrets and the endpoint reach docker only through its environment, passed by name (PLAN D8).
     env = dict(os.environ, **secret_env)
-    arguments = [
-        "--init",
-        "--user", f"{os.getuid()}:{os.getgid()}",
-        "--volume", f"{workspace}:/workspace:rw",
-        "--volume", f"{home}:/claude-home:rw",
-        "--env", "HOME=/claude-home/user",
-        "--env", "PATH=/claude-home/user/.local/bin:/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin",
-    ]
-    for name in secret_env:
-        arguments += ["--env", name]
-    for pair in model_environment(model) + options["gateway_env"]:
-        arguments += ["--env", pair]
-    arguments += ["--add-host", "host.docker.internal:host-gateway", image["id"], *_claude_arguments(model, options)]
+    arguments = _docker_arguments(workspace, home, model, secret_env, options, image)
     result = run_batch_container(arguments, f"claude-{run_id}", run_dir,
                                  options["task_timeout_seconds"], env=env)
     summary = summarize_run(Path(result["stdout_path"]))
@@ -150,6 +163,8 @@ def start_claude(config: dict) -> list:
         raise RuntimeError("The claude backend refuses to run as root: Claude Code rejects bypassPermissions "
                            "under uid 0, and artifacts must stay readable. Run as an unprivileged user (PLAN D5).")
     specifications = [(task, *resolve_model(entry)) for entry, _, task in model_tasks(config)]
+    if not SECCOMP_PROFILE.is_file():
+        raise RuntimeError(f"Missing seccomp profile {SECCOMP_PROFILE}")
     image = _image_info(options["image"])
     jobs = []
     for task, model, secret_env in specifications:
